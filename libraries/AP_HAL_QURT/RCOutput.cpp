@@ -1,26 +1,31 @@
-/// -*- tab-width: 4; Mode: C++; c-basic-offset: 4; indent-tabs-mode: nil -*-
 #include <AP_HAL/AP_HAL.h>
 
-#if CONFIG_HAL_BOARD == HAL_BOARD_QURT
-
 #include "RCOutput.h"
-#include <GCS_MAVLink/include/mavlink/v1.0/checksum.h>
-#include <stdio.h>
-#include <fcntl.h>
-#include <unistd.h>
-#include <dev_fs_lib_serial.h>
+#include <AP_Math/AP_Math.h>
+#include <AP_BoardConfig/AP_BoardConfig.h>
 
 extern const AP_HAL::HAL& hal;
 
 using namespace QURT;
 
+#define ESC_PACKET_TYPE_PWM_CMD 1
+#define ESC_PACKET_TYPE_FB_RESPONSE 128
+#define ESC_PACKET_TYPE_FB_POWER_STATUS 132
+
+#define ESC_PKT_HEADER 0xAF
+
 void RCOutput::init()
 {
+    fd = sl_client_config_uart(QURT_UART_ESC, baudrate);
+    if (fd == -1) {
+        HAP_PRINTF("Failed to open ESC UART");
+    }
+    HAP_PRINTF("ESC UART: %d", fd);
 }
 
 void RCOutput::set_freq(uint32_t chmask, uint16_t freq_hz)
 {
-    // no support for changing frequency yet
+    // no support for changing frequency
 }
 
 uint16_t RCOutput::get_freq(uint8_t ch)
@@ -31,7 +36,7 @@ uint16_t RCOutput::get_freq(uint8_t ch)
 
 void RCOutput::enable_ch(uint8_t ch)
 {
-    if (ch >= channel_count) {
+    if (ch >= ARRAY_SIZE(period)) {
         return;
     }
     enable_mask |= 1U<<ch;
@@ -39,7 +44,7 @@ void RCOutput::enable_ch(uint8_t ch)
 
 void RCOutput::disable_ch(uint8_t ch)
 {
-    if (ch >= channel_count) {
+    if (ch >= ARRAY_SIZE(period)) {
         return;
     }
     enable_mask &= ~1U<<ch;
@@ -47,16 +52,18 @@ void RCOutput::disable_ch(uint8_t ch)
 
 void RCOutput::write(uint8_t ch, uint16_t period_us)
 {
-    if (ch >= channel_count) {
+    if (ch >= ARRAY_SIZE(period)) {
         return;
     }
     period[ch] = period_us;
-    need_write = true;
+    if (!corked) {
+        need_write = true;
+    }
 }
 
 uint16_t RCOutput::read(uint8_t ch)
 {
-    if (ch >= channel_count) {
+    if (ch >= ARRAY_SIZE(period)) {
         return 0;
     }
     return period[ch];
@@ -64,50 +71,169 @@ uint16_t RCOutput::read(uint8_t ch)
 
 void RCOutput::read(uint16_t *period_us, uint8_t len)
 {
-    for (int i = 0; i < len; i++) {
+    for (auto i = 0; i < len; i++) {
         period_us[i] = read(i);
     }
 }
 
-extern "C" {
-    // discard incoming data
-    static void read_callback_trampoline(void *, char *, size_t ) {}
+/*
+  send a packet with CRC to the ESC
+ */
+void RCOutput::send_esc_packet(uint8_t type, uint8_t *data, uint16_t size)
+{
+    uint16_t packet_size = size + 5;
+    uint8_t out[packet_size];
+
+    out[0] = ESC_PKT_HEADER;
+    out[1] = packet_size;
+    out[2] = type;
+
+    memcpy(&out[3], data, size);
+
+    uint16_t crc = calc_crc_modbus(&out[1], packet_size - 3);
+
+    memcpy(&out[packet_size - 2], &crc, sizeof(uint16_t));
+
+    sl_client_uart_write(fd, (const char *)out, packet_size);
 }
 
-void RCOutput::timer_update(void)
+/*
+  convert 1000 to 2000 PWM to -800 to 800 for QURT ESCs
+ */
+static int16_t pwm_to_esc(uint16_t pwm)
 {
-    if (fd == -1 && device_path != nullptr) {
-        HAP_PRINTF("Opening RCOutput %s", device_path);
-        fd = open(device_path, O_RDWR|O_NONBLOCK);
-        if (fd == -1) {
-            AP_HAL::panic("Unable to open %s", device_path);
-        }
-        HAP_PRINTF("Opened ESC UART %s fd=%d\n", device_path, fd);
-        if (fd != -1) {
-            struct dspal_serial_ioctl_data_rate rate;
-            rate.bit_rate = DSPAL_SIO_BITRATE_115200;
-            ioctl(fd, SERIAL_IOCTL_SET_DATA_RATE, (void *)&rate);
+    const float p = constrain_float((pwm-1000)*0.001, 0, 1);
+    return int16_t(800*p);
+}
 
-            struct dspal_serial_ioctl_receive_data_callback callback;
-            callback.context = this;
-            callback.rx_data_callback_func_ptr = read_callback_trampoline;
-            ioctl(fd, SERIAL_IOCTL_SET_RECEIVE_DATA_CALLBACK, (void *)&callback);
-        }
-    }
-    if (!need_write || fd == -1) {
+/*
+  send current commands to ESCs
+ */
+void RCOutput::send_receive(void)
+{
+    if (fd == -1) {
         return;
     }
-    struct PACKED {
-        uint8_t magic = 0xF7;
-        uint16_t period[channel_count];
-        uint16_t crc;
-    } frame;
-    memcpy(frame.period, period, sizeof(period));
-    frame.crc = crc_calculate((uint8_t*)frame.period, channel_count*2);
+
+    AP_BoardConfig *boardconfig = AP_BoardConfig::get_singleton();
+    uint32_t safety_mask = 0;
+
+    if (boardconfig != nullptr) {
+        // mask of channels to allow with safety on
+        safety_mask = boardconfig->get_safety_mask();
+    }
+    
+    int16_t data[5] {};
+
+    for (uint8_t i=0; i<4; i++) {
+        uint16_t v = period[i];
+        if (safety_on && (safety_mask & (1U<<i)) == 0) {
+            // when safety is on we send 0, which allows us to still
+            // get feedback telemetry data, including battery voltage
+            v = 0;
+        }
+        data[i] = pwm_to_esc(v);
+    }
+
     need_write = false;
-    ::write(fd, (uint8_t *)&frame, sizeof(frame));
+
+    const uint32_t now_ms = AP_HAL::millis();
+    if (now_ms - last_fb_req_ms > 5) {
+        last_fb_req_ms = now_ms;
+        // request feedback from one ESC
+        last_fb_idx = (last_fb_idx+1) % 4;
+        data[last_fb_idx] |= 1;
+    }
+
+    send_esc_packet(ESC_PACKET_TYPE_PWM_CMD, (uint8_t *)data, sizeof(data));
+
+    check_response();
 }
 
+/*
+  handle a telem feedback packet
+ */
+void RCOutput::handle_esc_feedback(const struct esc_response_v2 &pkt)
+{
+    const uint8_t idx = pkt.id_state>>4;
+    if (idx >= ARRAY_SIZE(period)) {
+        return;
+    }
+    update_rpm(idx, pkt.rpm);
 
-#endif // CONFIG_HAL_BOARD_SUBTYPE
+    AP_ESC_Telem_Backend::TelemetryData tdata {};
+    tdata.voltage = pkt.voltage*0.001;
+    tdata.current = pkt.current*0.008;
+    tdata.temperature_cdeg = pkt.temperature;
 
+    update_telem_data(idx, tdata,
+                      AP_ESC_Telem_Backend::TelemetryType::CURRENT |
+                      AP_ESC_Telem_Backend::TelemetryType::VOLTAGE |
+                      AP_ESC_Telem_Backend::TelemetryType::TEMPERATURE);
+}
+
+/*
+  handle a power status packet, making it available to AnalogIn
+ */
+void RCOutput::handle_power_status(const struct esc_power_status &pkt)
+{
+    esc_voltage = pkt.voltage * 0.001;
+    esc_current = pkt.current * 0.008;
+}
+
+// check for responses
+void RCOutput::check_response(void)
+{
+    uint8_t buf[256];
+    struct PACKED esc_packet {
+        uint8_t header;
+        uint8_t length;
+        uint8_t type;
+        union {
+            struct esc_response_v2 resp_v2;
+            struct esc_power_status power_status;
+        } u;
+    };
+    auto n = sl_client_uart_read(fd, (char *)buf, sizeof(buf));
+    while (n >= 3) {
+        const auto *pkt = (struct esc_packet *)buf;
+        if (pkt->header != ESC_PKT_HEADER || pkt->length > n) {
+            return;
+        }
+        const uint16_t crc = calc_crc_modbus(&pkt->length, pkt->length-3);
+        const uint16_t crc2 = buf[pkt->length-2] | buf[pkt->length-1]<<8;
+        if (crc != crc2) {
+            return;
+        }
+        switch (pkt->type) {
+        case ESC_PACKET_TYPE_FB_RESPONSE:
+            handle_esc_feedback(pkt->u.resp_v2);
+            break;
+        case ESC_PACKET_TYPE_FB_POWER_STATUS:
+            handle_power_status(pkt->u.power_status);
+            break;
+        default:
+            HAP_PRINTF("Unknown pkt %u", pkt->type);
+            break;
+        }
+        if (n == pkt->length) {
+            break;
+        }
+        memmove(&buf[0], &buf[pkt->length], n - pkt->length);
+        n -= pkt->length;
+    }
+}
+
+void RCOutput::cork(void)
+{
+    corked = true;
+}
+
+void RCOutput::push(void)
+{
+    if (corked) {
+        corked = false;
+        need_write = true;
+        send_receive();
+    }
+}

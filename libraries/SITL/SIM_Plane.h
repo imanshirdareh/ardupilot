@@ -1,4 +1,3 @@
-/// -*- tab-width: 4; Mode: C++; c-basic-offset: 4; indent-tabs-mode: nil -*-
 /*
    This program is free software: you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -20,6 +19,8 @@
 #pragma once
 
 #include "SIM_Aircraft.h"
+#include "SIM_ICEngine.h"
+#include <Filter/LowPassFilter.h>
 
 namespace SITL {
 
@@ -28,22 +29,20 @@ namespace SITL {
  */
 class Plane : public Aircraft {
 public:
-    Plane(const char *home_str, const char *frame_str);
+    Plane(const char *frame_str);
 
     /* update model by one time step */
-    virtual void update(const struct sitl_input &input);
+    virtual void update(const struct sitl_input &input) override;
 
     /* static object creator */
-    static Aircraft *create(const char *home_str, const char *frame_str) {
-        return new Plane(home_str, frame_str);
+    static Aircraft *create(const char *frame_str) {
+        return NEW_NOTHROW Plane(frame_str);
     }
 
 protected:
     const float hover_throttle = 0.7f;
-    const float air_density = 1.225; // kg/m^3 at sea level, ISA conditions
     float angle_of_attack;
     float beta;
-    Vector3f velocity_bf;
 
     struct {
         // from last_letter skywalker_2013/aerodynamics.yaml
@@ -92,12 +91,40 @@ protected:
     } coefficient;
 
     float thrust_scale;
+    bool reverse_thrust;
+    bool elevons;
+    bool vtail;
+    bool dspoilers;
+    bool reverse_elevator_rudder;
+    bool ice_engine;
+    bool tailsitter;
+    bool aerobatic;
+    bool copter_tailsitter;
+    bool have_launcher;
+    bool have_steering;
+    float launch_accel;
+    float launch_time;
+    uint64_t launch_start_ms;
+
+    const uint8_t throttle_servo = 2;
+    const int8_t choke_servo = 14;
+    const int8_t ignition_servo = 12;
+    const int8_t starter_servo = 13;
+    const float slewrate = 100;
+    ICEngine icengine{
+        throttle_servo,
+        choke_servo,
+        ignition_servo,
+        starter_servo,
+        slewrate,
+        true
+    };
 
     float liftCoeff(float alpha) const;
     float dragCoeff(float alpha) const;
     Vector3f getForce(float inputAileron, float inputElevator, float inputRudder) const;
-    Vector3f getTorque(float inputAileron, float inputElevator, float inputRudder, const Vector3f &force) const;
-    void calculate_forces(const struct sitl_input &input, Vector3f &rot_accel, Vector3f &body_accel);
+    Vector3f getTorque(float inputAileron, float inputElevator, float inputRudder, float inputThrust, const Vector3f &force) const;
+    void calculate_forces(const struct sitl_input &input, Vector3f &rot_accel);
 };
 
 } // namespace SITL

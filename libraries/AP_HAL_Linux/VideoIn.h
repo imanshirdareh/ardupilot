@@ -15,15 +15,18 @@
 #pragma once
 
 #include "AP_HAL_Linux.h"
+#include <sys/time.h>
 #include <linux/videodev2.h>
 #include <vector>
+
+namespace Linux {
 
 struct buffer {
     unsigned int size;
     void *mem;
 };
 
-class Linux::VideoIn {
+class VideoIn {
 public:
     /* This structure implements the fields of the v4l2_pix_format struct
      * that are considered useful for an optical flow application along
@@ -80,3 +83,5 @@ private:
     uint32_t _sizeimage;
     uint32_t _memtype = V4L2_MEMORY_MMAP;
 };
+
+}

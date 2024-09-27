@@ -10,9 +10,13 @@
 #include <AP_HAL/AP_HAL.h>
 #include <AP_InertialSensor/AP_InertialSensor.h>
 #include <AP_NavEKF2/AP_NavEKF2.h>
-#include <AP_NavEKF/AP_NavEKF.h>
+#include <AP_NavEKF3/AP_NavEKF3.h>
 #include <AP_OpticalFlow/AP_OpticalFlow.h>
 #include <AP_RangeFinder/AP_RangeFinder.h>
+#include <AP_SerialManager/AP_SerialManager.h>
+
+void setup();
+void loop();
 
 const AP_HAL::HAL& hal = AP_HAL::get_HAL();
 
@@ -23,35 +27,38 @@ public:
     Compass compass;
     AP_InertialSensor ins;
     AP_SerialManager serial_manager;
-    RangeFinder sonar {serial_manager};
-    AP_AHRS_NavEKF ahrs{ins, barometer, gps, sonar, EKF, EKF2,
-                        AP_AHRS_NavEKF::FLAG_ALWAYS_USE_EKF};
-    NavEKF EKF{&ahrs, barometer, sonar};
-    NavEKF2 EKF2{&ahrs, barometer, sonar};
+    RangeFinder sonar;
+    AP_AHRS ahrs{AP_AHRS::FLAG_ALWAYS_USE_EKF};
 };
 
 static DummyVehicle vehicle;
-static OpticalFlow optflow(vehicle.ahrs);
+#if AP_OPTICALFLOW_ENABLED
+static AP_OpticalFlow optflow;
+#endif
 
 void setup()
 {
-    hal.console->println("OpticalFlow library test ver 1.6");
+    hal.console->printf("OpticalFlow library test ver 1.6\n");
 
     hal.scheduler->delay(1000);
 
+#if AP_OPTICALFLOW_ENABLED
     // flowSensor initialization
-    optflow.init();
+    optflow.init(-1);
 
     if (!optflow.healthy()) {
-        hal.console->print("Failed to initialise PX4Flow ");
+        hal.console->printf("Failed to initialise OpticalFlow");
     }
+#else
+    hal.console->printf("OpticalFlow compiled out");
+#endif
 
     hal.scheduler->delay(1000);
 }
 
 void loop()
 {
-    hal.console->println("this only tests compilation succeeds");
+    hal.console->printf("this only tests compilation succeeds\n");
 
     hal.scheduler->delay(5000);
 }

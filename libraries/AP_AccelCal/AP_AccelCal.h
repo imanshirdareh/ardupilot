@@ -1,5 +1,16 @@
-#ifndef __AP_ACCELCAL_H__
-#define __AP_ACCELCAL_H__
+#pragma once
+
+#include <AP_HAL/AP_HAL_Boards.h>
+#include <GCS_MAVLink/GCS_config.h>
+
+#ifndef HAL_INS_ACCELCAL_ENABLED
+#if HAL_GCS_ENABLED
+#include <AP_InertialSensor/AP_InertialSensor_config.h>
+#define HAL_INS_ACCELCAL_ENABLED AP_INERTIALSENSOR_ENABLED
+#else
+#define HAL_INS_ACCELCAL_ENABLED 0
+#endif
+#endif
 
 #include <GCS_MAVLink/GCS_MAVLink.h>
 #include "AccelCalibrator.h"
@@ -11,6 +22,7 @@ class AP_AccelCal_Client;
 class AP_AccelCal {
 public:
     AP_AccelCal():
+    _use_gcs_snoop(true),
     _started(false),
     _saving(false)
     { update_status(); }
@@ -26,14 +38,28 @@ public:
 
     // get the status of the calibrator server as a whole
     accel_cal_status_t get_status() { return _status; }
+    
+    // Set vehicle position sent by the GCS
+    bool gcs_vehicle_position(float position);
 
     // interface to the clients for registration
     static void register_client(AP_AccelCal_Client* client);
 
+#if HAL_GCS_ENABLED
+    void handle_command_ack(const mavlink_command_ack_t &packet);
+#endif
+
+    // true if we are in a calibration process
+    bool running(void) const;
+
 private:
-    GCS_MAVLINK *_gcs;
+    class GCS_MAVLINK *_gcs;
+    bool _use_gcs_snoop;
+    bool _waiting_for_mavlink_ack = false;
+    uint32_t _last_position_request_ms;
     uint8_t _step;
     accel_cal_status_t _status;
+    accel_cal_status_t _last_result;
 
     static uint8_t _num_clients;
     static AP_AccelCal_Client* _clients[AP_ACCELCAL_MAX_NUM_CLIENTS];
@@ -53,7 +79,7 @@ private:
     // update the state of the Accel calibrator server
     void update_status();
 
-    // checks if no new sample has been recieved for considerable amount of time
+    // checks if no new sample has been received for considerable amount of time
     bool check_for_timeout();
 
     // check if client's calibrator is active
@@ -65,7 +91,6 @@ private:
     uint8_t _num_active_calibrators;
 
     AccelCalibrator* get_calibrator(uint8_t i);
-    void _printf(const char*, ...);
 };
 
 class AP_AccelCal_Client {
@@ -83,5 +108,3 @@ private:
     virtual void _acal_event_cancellation() {};
     virtual void _acal_event_failure() {};
 };
-
-#endif

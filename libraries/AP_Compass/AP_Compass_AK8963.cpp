@@ -1,4 +1,3 @@
-/// -*- tab-width: 4; Mode: C++; c-basic-offset: 4; indent-tabs-mode: nil -*-
 /*
    This program is free software: you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -14,13 +13,17 @@
    along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
+#include "AP_Compass_AK8963.h"
+
+#if AP_COMPASS_AK8963_ENABLED
+
+#include <assert.h>
+#include <utility>
+
 #include <AP_Math/AP_Math.h>
 #include <AP_HAL/AP_HAL.h>
 
-#if CONFIG_HAL_BOARD == HAL_BOARD_LINUX
-
-#include "AP_Compass_AK8963.h"
-#include <AP_InertialSensor/AP_InertialSensor_MPU9250.h>
+#include <AP_InertialSensor/AP_InertialSensor_Invensense.h>
 
 #define AK8963_I2C_ADDR                                 0x0c
 
@@ -44,74 +47,15 @@
 
 #define AK8963_ASAX                                     0x10
 
-#define AK8963_DEBUG 0
-#if AK8963_DEBUG
-#include <stdio.h>
-#define error(...) do { fprintf(stderr, __VA_ARGS__); } while (0)
-#define ASSERT(x) assert(x)
-#else
-#define error(...) do { } while (0)
-#ifndef ASSERT
-#define ASSERT(x)
-#endif
-#endif
-
 #define AK8963_MILLIGAUSS_SCALE 10.0f
 
-extern const AP_HAL::HAL& hal;
+extern const AP_HAL::HAL &hal;
 
-AP_Compass_AK8963::AP_Compass_AK8963(Compass &compass, AP_AK8963_SerialBus *bus) :
-    AP_Compass_Backend(compass),
-    _initialized(false),
-    _last_update_timestamp(0),
-    _last_accum_time(0),
-    _bus(bus)
+AP_Compass_AK8963::AP_Compass_AK8963(AP_AK8963_BusDriver *bus,
+                                     enum Rotation rotation)
+    : _bus(bus)
+    , _rotation(rotation)
 {
-    _reset_filter();
-}
-
-AP_Compass_Backend *AP_Compass_AK8963::detect_mpu9250(Compass &compass, uint8_t mpu9250_instance)
-{
-    AP_InertialSensor &ins = *AP_InertialSensor::get_instance();
-    AP_AK8963_SerialBus *bus = new AP_AK8963_SerialBus_MPU9250(ins, AK8963_I2C_ADDR, mpu9250_instance);
-    if (!bus)
-        return nullptr;
-    return _detect(compass, bus);
-}
-
-AP_Compass_Backend *AP_Compass_AK8963::detect_i2c(Compass &compass,
-                                                  AP_HAL::I2CDriver *i2c,
-                                                  uint8_t addr)
-{
-    AP_AK8963_SerialBus *bus = new AP_AK8963_SerialBus_I2C(i2c, addr);
-    if (!bus)
-        return nullptr;
-    return _detect(compass, bus);
-}
-
-AP_Compass_Backend *AP_Compass_AK8963::detect_mpu9250_i2c(Compass &compass,
-                                                          AP_HAL::I2CDriver *i2c,
-                                                          uint8_t addr)
-{
-    AP_InertialSensor &ins = *AP_InertialSensor::get_instance();
-    ins.detect_backends();
-    return detect_i2c(compass, i2c, addr);
-}
-
-AP_Compass_Backend *AP_Compass_AK8963::_detect(Compass &compass,
-                                               AP_AK8963_SerialBus *bus)
-{
-    AP_Compass_AK8963 *sensor = new AP_Compass_AK8963(compass, bus);
-    if (sensor == nullptr) {
-        delete bus;
-        return nullptr;
-    }
-    if (!sensor->init()) {
-        delete sensor;
-        return nullptr;
-    }
-
-    return sensor;
 }
 
 AP_Compass_AK8963::~AP_Compass_AK8963()
@@ -119,60 +63,119 @@ AP_Compass_AK8963::~AP_Compass_AK8963()
     delete _bus;
 }
 
-/* stub to satisfy Compass API*/
-void AP_Compass_AK8963::accumulate(void)
+AP_Compass_Backend *AP_Compass_AK8963::probe(AP_HAL::OwnPtr<AP_HAL::I2CDevice> dev,
+                                             enum Rotation rotation)
 {
+    if (!dev) {
+        return nullptr;
+    }
+    AP_AK8963_BusDriver *bus = NEW_NOTHROW AP_AK8963_BusDriver_HALDevice(std::move(dev));
+    if (!bus) {
+        return nullptr;
+    }
+
+    AP_Compass_AK8963 *sensor = NEW_NOTHROW AP_Compass_AK8963(bus, rotation);
+    if (!sensor || !sensor->init()) {
+        delete sensor;
+        return nullptr;
+    }
+
+    return sensor;
+}
+
+AP_Compass_Backend *AP_Compass_AK8963::probe_mpu9250(AP_HAL::OwnPtr<AP_HAL::I2CDevice> dev,
+                                                     enum Rotation rotation)
+{
+    if (!dev) {
+        return nullptr;
+    }
+#if AP_INERTIALSENSOR_ENABLED
+    AP_InertialSensor &ins = *AP_InertialSensor::get_singleton();
+
+    /* Allow MPU9250 to shortcut auxiliary bus and host bus */
+    ins.detect_backends();
+#endif
+
+    return probe(std::move(dev), rotation);
+}
+
+AP_Compass_Backend *AP_Compass_AK8963::probe_mpu9250(uint8_t mpu9250_instance,
+                                                     enum Rotation rotation)
+{
+#if AP_INERTIALSENSOR_ENABLED
+    AP_InertialSensor &ins = *AP_InertialSensor::get_singleton();
+
+    AP_AK8963_BusDriver *bus =
+        NEW_NOTHROW AP_AK8963_BusDriver_Auxiliary(ins, HAL_INS_MPU9250_SPI, mpu9250_instance, AK8963_I2C_ADDR);
+    if (!bus) {
+        return nullptr;
+    }
+
+    AP_Compass_AK8963 *sensor = NEW_NOTHROW AP_Compass_AK8963(bus, rotation);
+    if (!sensor || !sensor->init()) {
+        delete sensor;
+        return nullptr;
+    }
+
+    return sensor;
+#else
+    return nullptr;
+#endif
+
 }
 
 bool AP_Compass_AK8963::init()
 {
-    _bus_sem = _bus->get_semaphore();
+    AP_HAL::Semaphore *bus_sem = _bus->get_semaphore();
 
-    hal.scheduler->suspend_timer_procs();
+    if (!bus_sem) {
+        return false;
+    }
+    _bus->get_semaphore()->take_blocking();
 
-    if (!_bus_sem->take(100)) {
-        hal.console->printf("AK8963: Unable to get bus semaphore");
-        goto fail_sem;
+    if (!_bus->configure()) {
+        DEV_PRINTF("AK8963: Could not configure the bus\n");
+        goto fail;
     }
 
     if (!_check_id()) {
-        hal.console->printf("AK8963: Wrong id\n");
+        DEV_PRINTF("AK8963: Wrong id\n");
         goto fail;
     }
 
     if (!_calibrate()) {
-        hal.console->printf("AK8963: Could not read calibration data\n");
+        DEV_PRINTF("AK8963: Could not read calibration data\n");
         goto fail;
     }
 
     if (!_setup_mode()) {
-        hal.console->printf("AK8963: Could not setup mode\n");
+        DEV_PRINTF("AK8963: Could not setup mode\n");
         goto fail;
     }
 
     if (!_bus->start_measurements()) {
-        hal.console->printf("AK8963: Could not start measurements\n");
+        DEV_PRINTF("AK8963: Could not start measurements\n");
         goto fail;
     }
 
     _initialized = true;
 
     /* register the compass instance in the frontend */
-    _compass_instance = register_compass();
-    set_dev_id(_compass_instance, _bus->get_dev_id());
-    /* timer needs to be called every 10ms so set the freq_div to 10 */
-    _timesliced = hal.scheduler->register_timer_process(FUNCTOR_BIND_MEMBER(&AP_Compass_AK8963::_update, void), 10);
+    _bus->set_device_type(DEVTYPE_AK8963);
+    if (!register_compass(_bus->get_bus_id(), _compass_instance)) {
+        goto fail;
+    }
+    set_dev_id(_compass_instance, _bus->get_bus_id());
 
-    _bus_sem->give();
-    hal.scheduler->resume_timer_procs();
+    set_rotation(_compass_instance, _rotation);
+    bus_sem->give();
+
+    _bus->register_periodic_callback(10000, FUNCTOR_BIND_MEMBER(&AP_Compass_AK8963::_update, void));
 
     return true;
 
 fail:
-    _bus_sem->give();
-fail_sem:
-    hal.scheduler->resume_timer_procs();
-
+    bus_sem->give();
     return false;
 }
 
@@ -182,31 +185,7 @@ void AP_Compass_AK8963::read()
         return;
     }
 
-    if (_accum_count == 0) {
-        /* We're not ready to publish*/
-        return;
-    }
-
-    hal.scheduler->suspend_timer_procs();
-    auto field = _get_filtered_field();
-
-    _reset_filter();
-    hal.scheduler->resume_timer_procs();
-    publish_filtered_field(field, _compass_instance);
-}
-
-Vector3f AP_Compass_AK8963::_get_filtered_field() const
-{
-    Vector3f field(_mag_x_accum, _mag_y_accum, _mag_z_accum);
-    field /= _accum_count;
-
-    return field;
-}
-
-void AP_Compass_AK8963::_reset_filter()
-{
-    _mag_x_accum = _mag_y_accum = _mag_z_accum = 0;
-    _accum_count = 0;
+    drain_accumulated_samples(_compass_instance);
 }
 
 void AP_Compass_AK8963::_make_adc_sensitivity_adjustment(Vector3f& field) const
@@ -225,80 +204,40 @@ void AP_Compass_AK8963::_make_factory_sensitivity_adjustment(Vector3f& field) co
 
 void AP_Compass_AK8963::_update()
 {
-    struct AP_AK8963_SerialBus::raw_value rv;
-    float mag_x, mag_y, mag_z;
-    // get raw_field - sensor frame, uncorrected
+    struct sample_regs regs;
     Vector3f raw_field;
-    uint32_t time_us = AP_HAL::micros();
 
-    if (!_timesliced &&
-        AP_HAL::micros() - _last_update_timestamp < 10000) {
-        goto end;
+    if (!_bus->block_read(AK8963_HXL, (uint8_t *) &regs, sizeof(regs))) {
+        return;
     }
-
-    if (!_sem_take_nonblocking()) {
-        goto end;
-    }
-
-    _bus->read_raw(&rv);
 
     /* Check for overflow. See AK8963's datasheet, section
      * 6.4.3.6 - Magnetic Sensor Overflow. */
-    if ((rv.st2 & 0x08)) {
-        goto fail;
+    if ((regs.st2 & 0x08)) {
+        return;
     }
 
-    mag_x = (float) rv.val[0];
-    mag_y = (float) rv.val[1];
-    mag_z = (float) rv.val[2];
+    raw_field = Vector3f(regs.val[0], regs.val[1], regs.val[2]);
 
-    if (is_zero(mag_x) && is_zero(mag_y) && is_zero(mag_z)) {
-        goto fail;
+    if (is_zero(raw_field.x) && is_zero(raw_field.y) && is_zero(raw_field.z)) {
+        return;
     }
-
-    raw_field = Vector3f(mag_x, mag_y, mag_z);
 
     _make_factory_sensitivity_adjustment(raw_field);
     _make_adc_sensitivity_adjustment(raw_field);
     raw_field *= AK8963_MILLIGAUSS_SCALE;
 
-    // rotate raw_field from sensor frame to body frame
-    rotate_field(raw_field, _compass_instance);
-
-    // publish raw_field (uncorrected point sample) for calibration use
-    publish_raw_field(raw_field, time_us, _compass_instance);
-
-    // correct raw_field for known errors
-    correct_field(raw_field, _compass_instance);
-
-    // publish raw_field (corrected point sample) for EKF use
-    publish_unfiltered_field(raw_field, time_us, _compass_instance);
-
-    _mag_x_accum += raw_field.x;
-    _mag_y_accum += raw_field.y;
-    _mag_z_accum += raw_field.z;
-    _accum_count++;
-    if (_accum_count == 10) {
-        _mag_x_accum /= 2;
-        _mag_y_accum /= 2;
-        _mag_z_accum /= 2;
-        _accum_count = 5;
-    }
-
-    _last_update_timestamp = AP_HAL::micros();
-fail:
-    _sem_give();
-end:
-    return;
+    accumulate_sample(raw_field, _compass_instance, 10);
 }
 
 bool AP_Compass_AK8963::_check_id()
 {
     for (int i = 0; i < 5; i++) {
         uint8_t deviceid = 0;
-        _bus->register_read(AK8963_WIA, &deviceid, 0x01); /* Read AK8963's id */
 
-        if (deviceid == AK8963_Device_ID) {
+        /* Read AK8963's id */
+        if (_bus->register_read(AK8963_WIA, &deviceid) &&
+            deviceid == AK8963_Device_ID) {
             return true;
         }
     }
@@ -307,14 +246,12 @@ bool AP_Compass_AK8963::_check_id()
 }
 
 bool AP_Compass_AK8963::_setup_mode() {
-    _bus->register_write(AK8963_CNTL1, AK8963_CONTINUOUS_MODE2 | AK8963_16BIT_ADC);
-    return true;
+    return _bus->register_write(AK8963_CNTL1, AK8963_CONTINUOUS_MODE2 | AK8963_16BIT_ADC);
 }
 
 bool AP_Compass_AK8963::_reset()
 {
-    _bus->register_write(AK8963_CNTL2, AK8963_RESET);
-    return true;
+    return _bus->register_write(AK8963_CNTL2, AK8963_RESET);
 }
 
 
@@ -324,158 +261,143 @@ bool AP_Compass_AK8963::_calibrate()
     _bus->register_write(AK8963_CNTL1, AK8963_FUSE_MODE | AK8963_16BIT_ADC);
 
     uint8_t response[3];
-    _bus->register_read(AK8963_ASAX, response, 3);
+
+    _bus->block_read(AK8963_ASAX, response, 3);
 
     for (int i = 0; i < 3; i++) {
         float data = response[i];
         _magnetometer_ASA[i] = ((data - 128) / 256 + 1);
-        error("%d: %lf\n", i, _magnetometer_ASA[i]);
     }
 
     return true;
 }
 
-bool AP_Compass_AK8963::_sem_take_blocking()
+/* AP_HAL::I2CDevice implementation of the AK8963 */
+AP_AK8963_BusDriver_HALDevice::AP_AK8963_BusDriver_HALDevice(AP_HAL::OwnPtr<AP_HAL::I2CDevice> dev)
+    : _dev(std::move(dev))
 {
-    return _bus_sem->take(10);
 }
 
-bool AP_Compass_AK8963::_sem_give()
+bool AP_AK8963_BusDriver_HALDevice::block_read(uint8_t reg, uint8_t *buf, uint32_t size)
 {
-    return _bus_sem->give();
+    return _dev->read_registers(reg, buf, size);
 }
 
-bool AP_Compass_AK8963::_sem_take_nonblocking()
+bool AP_AK8963_BusDriver_HALDevice::register_read(uint8_t reg, uint8_t *val)
 {
-    static int _sem_failure_count = 0;
-
-    if (_bus_sem->take_nonblocking()) {
-        _sem_failure_count = 0;
-        return true;
-    }
-
-    if (!hal.scheduler->system_initializing() ) {
-        _sem_failure_count++;
-        if (_sem_failure_count > 100) {
-            AP_HAL::panic("PANIC: failed to take _bus->sem "
-                                 "100 times in a row, in "
-                                 "AP_Compass_AK8963");
-        }
-    }
-
-    return false;
+    return _dev->read_registers(reg, val, 1);
 }
 
-void AP_Compass_AK8963::_dump_registers()
+bool AP_AK8963_BusDriver_HALDevice::register_write(uint8_t reg, uint8_t val)
 {
-#if AK8963_DEBUG
-    error("MPU9250 registers\n");
-    static uint8_t regs[0x7e];
-
-    _bus_read(0x0, regs, 0x7e);
-
-    for (uint8_t reg=0x00; reg<=0x7E; reg++) {
-        uint8_t v = regs[reg];
-        error(("%d:%02x "), (unsigned)reg, (unsigned)v);
-        if (reg  % 16 == 0) {
-            error("\n");
-        }
-    }
-    error("\n");
-#endif
+    return _dev->write_register(reg, val);
 }
 
-/* MPU9250 implementation of the AK8963 */
-AP_AK8963_SerialBus_MPU9250::AP_AK8963_SerialBus_MPU9250(AP_InertialSensor &ins,
-                                                         uint8_t addr,
-                                                         uint8_t mpu9250_instance)
+AP_HAL::Semaphore *AP_AK8963_BusDriver_HALDevice::get_semaphore()
 {
-    // Only initialize members. Fails are handled by configure or while
-    // getting the semaphore
-    _bus = ins.get_auxiliary_bus(HAL_INS_MPU9250, mpu9250_instance);
-    if (!_bus)
-        AP_HAL::panic("Cannot get MPU9250 auxiliary bus");
-
-    _slave = _bus->request_next_slave(addr);
+    return _dev->get_semaphore();
 }
 
-AP_AK8963_SerialBus_MPU9250::~AP_AK8963_SerialBus_MPU9250()
+AP_HAL::Device::PeriodicHandle AP_AK8963_BusDriver_HALDevice::register_periodic_callback(uint32_t period_usec, AP_HAL::Device::PeriodicCb cb)
 {
-    /* After started it's owned by AuxiliaryBus */
-    if (!_started)
-        delete _slave;
+    return _dev->register_periodic_callback(period_usec, cb);
 }
 
-void AP_AK8963_SerialBus_MPU9250::register_write(uint8_t reg, uint8_t value)
+/* AK8963 on an auxiliary bus of IMU driver */
+AP_AK8963_BusDriver_Auxiliary::AP_AK8963_BusDriver_Auxiliary(AP_InertialSensor &ins, uint8_t backend_id,
+                                                             uint8_t backend_instance, uint8_t addr)
 {
-    _slave->passthrough_write(reg, value);
-}
-
-void AP_AK8963_SerialBus_MPU9250::register_read(uint8_t reg, uint8_t *value, uint8_t count)
-{
-    _slave->passthrough_read(reg, value, count);
-}
-
-void AP_AK8963_SerialBus_MPU9250::read_raw(struct raw_value *rv)
-{
-    if (_started) {
-        _slave->read((uint8_t*)rv);
+    /*
+     * Only initialize members. Fails are handled by configure or while
+     * getting the semaphore
+     */
+#if AP_INERTIALSENSOR_ENABLED
+    _bus = ins.get_auxiliary_bus(backend_id, backend_instance);
+    if (!_bus) {
         return;
     }
 
-    _slave->passthrough_read(0x03, (uint8_t*)rv, sizeof(*rv));
+    _slave = _bus->request_next_slave(addr);
+#endif
 }
 
-AP_HAL::Semaphore * AP_AK8963_SerialBus_MPU9250::get_semaphore()
+AP_AK8963_BusDriver_Auxiliary::~AP_AK8963_BusDriver_Auxiliary()
+{
+    /* After started it's owned by AuxiliaryBus */
+    if (!_started) {
+        delete _slave;
+    }
+}
+
+bool AP_AK8963_BusDriver_Auxiliary::block_read(uint8_t reg, uint8_t *buf, uint32_t size)
+{
+    if (_started) {
+        /*
+         * We can only read a block when reading the block of sample values -
+         * calling with any other value is a mistake
+         */
+        if (reg != AK8963_HXL) {
+            return false;
+        }
+
+        int n = _slave->read(buf);
+        return n == static_cast<int>(size);
+    }
+
+    int r = _slave->passthrough_read(reg, buf, size);
+
+    return r > 0 && static_cast<uint32_t>(r) == size;
+}
+
+bool AP_AK8963_BusDriver_Auxiliary::register_read(uint8_t reg, uint8_t *val)
+{
+    return _slave->passthrough_read(reg, val, 1) == 1;
+}
+
+bool AP_AK8963_BusDriver_Auxiliary::register_write(uint8_t reg, uint8_t val)
+{
+    return _slave->passthrough_write(reg, val) == 1;
+}
+
+AP_HAL::Semaphore *AP_AK8963_BusDriver_Auxiliary::get_semaphore()
 {
     return _bus ? _bus->get_semaphore() : nullptr;
 }
 
-bool AP_AK8963_SerialBus_MPU9250::start_measurements()
+bool AP_AK8963_BusDriver_Auxiliary::configure()
 {
-    if (_bus->register_periodic_read(_slave, AK8963_HXL, sizeof(struct raw_value)) < 0)
+    if (!_bus || !_slave) {
         return false;
+    }
+    return true;
+}
+
+bool AP_AK8963_BusDriver_Auxiliary::start_measurements()
+{
+    if (_bus->register_periodic_read(_slave, AK8963_HXL, sizeof(AP_Compass_AK8963::sample_regs)) < 0) {
+        return false;
+    }
 
     _started = true;
 
     return true;
 }
 
-uint32_t AP_AK8963_SerialBus_MPU9250::get_dev_id()
+AP_HAL::Device::PeriodicHandle AP_AK8963_BusDriver_Auxiliary::register_periodic_callback(uint32_t period_usec, AP_HAL::Device::PeriodicCb cb)
 {
-    return AP_COMPASS_TYPE_AK8963_MPU9250;
+    return _bus->register_periodic_callback(period_usec, cb);
 }
 
-/* I2C implementation of the AK8963 */
-AP_AK8963_SerialBus_I2C::AP_AK8963_SerialBus_I2C(AP_HAL::I2CDriver *i2c, uint8_t addr) :
-    _i2c(i2c),
-    _addr(addr)
+// set device type within a device class
+void AP_AK8963_BusDriver_Auxiliary::set_device_type(uint8_t devtype)
 {
+    _bus->set_device_type(devtype);
 }
 
-void AP_AK8963_SerialBus_I2C::register_write(uint8_t reg, uint8_t value)
+// return 24 bit bus identifier
+uint32_t AP_AK8963_BusDriver_Auxiliary::get_bus_id(void) const
 {
-    _i2c->writeRegister(_addr, reg, value);
+    return _bus->get_bus_id();
 }
 
-void AP_AK8963_SerialBus_I2C::register_read(uint8_t reg, uint8_t *value, uint8_t count)
-{
-    _i2c->readRegisters(_addr, reg, count, value);
-}
-
-void AP_AK8963_SerialBus_I2C::read_raw(struct raw_value *rv)
-{
-    _i2c->readRegisters(_addr, AK8963_HXL, sizeof(*rv), (uint8_t *) rv);
-}
-
-AP_HAL::Semaphore * AP_AK8963_SerialBus_I2C::get_semaphore()
-{
-    return _i2c->get_semaphore();
-}
-
-uint32_t AP_AK8963_SerialBus_I2C::get_dev_id()
-{
-    return AP_COMPASS_TYPE_AK8963_I2C;
-}
-
-#endif // CONFIG_HAL_BOARD
+#endif  // AP_COMPASS_AK8963_ENABLED

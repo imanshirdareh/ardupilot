@@ -1,73 +1,6 @@
-// -*- tab-width: 4; Mode: C++; c-basic-offset: 4; indent-tabs-mode: nil -*-
-
 #include "Plane.h"
 
-/*****************************************************************************
-*   The init_ardupilot function processes everything we need for an in - air restart
-*        We will determine later if we are actually on the ground and process a
-*        ground start in that case.
-*
-*****************************************************************************/
-
-#if CLI_ENABLED == ENABLED
-
-// This is the help function
-int8_t Plane::main_menu_help(uint8_t argc, const Menu::arg *argv)
-{
-    cliSerial->printf("Commands:\n"
-                         "  logs        log readback/setup mode\n"
-                         "  setup       setup mode\n"
-                         "  test        test mode\n"
-                         "  reboot      reboot to flight mode\n"
-                         "\n");
-    return(0);
-}
-
-// Command/function table for the top-level menu.
-static const struct Menu::command main_menu_commands[] = {
-//   command		function called
-//   =======        ===============
-    {"logs",        MENU_FUNC(process_logs)},
-    {"setup",       MENU_FUNC(setup_mode)},
-    {"test",        MENU_FUNC(test_mode)},
-    {"reboot",      MENU_FUNC(reboot_board)},
-    {"help",        MENU_FUNC(main_menu_help)},
-};
-
-// Create the top-level menu object.
-MENU(main_menu, THISFIRMWARE, main_menu_commands);
-
-int8_t Plane::reboot_board(uint8_t argc, const Menu::arg *argv)
-{
-    hal.scheduler->reboot(false);
-    return 0;
-}
-
-// the user wants the CLI. It never exits
-void Plane::run_cli(AP_HAL::UARTDriver *port)
-{
-    // disable the failsafe code in the CLI
-    hal.scheduler->register_timer_failsafe(NULL,1);
-
-    // disable the mavlink delay callback
-    hal.scheduler->register_delay_callback(NULL, 5);
-
-    cliSerial = port;
-    Menu::set_port(port);
-    port->set_blocking_writes(true);
-
-    while (1) {
-        main_menu.run();
-    }
-}
-
-#endif // CLI_ENABLED
-
-
-static void mavlink_delay_cb_static()
-{
-    plane.mavlink_delay_cb();
-}
+#include "qautotune.h"
 
 static void failsafe_check_static()
 {
@@ -76,132 +9,85 @@ static void failsafe_check_static()
 
 void Plane::init_ardupilot()
 {
-    // initialise serial port
-    serial_manager.init_console();
 
-    cliSerial->printf("\n\nInit " FIRMWARE_STRING
-                         "\n\nFree RAM: %u\n",
-                      (unsigned)hal.util->available_memory());
+    ins.set_log_raw_bit(MASK_LOG_IMU_RAW);
 
+    rollController.convert_pid();
+    pitchController.convert_pid();
 
-    //
-    // Check the EEPROM format version before loading any parameters from EEPROM
-    //
-    load_parameters();
+    // initialise rc channels including setting mode
+#if HAL_QUADPLANE_ENABLED
+    rc().convert_options(RC_Channel::AUX_FUNC::ARMDISARM_UNUSED, (quadplane.enabled() && quadplane.option_is_set(QuadPlane::OPTION::AIRMODE_UNUSED) && (rc().find_channel_for_option(RC_Channel::AUX_FUNC::AIRMODE) == nullptr)) ? RC_Channel::AUX_FUNC::ARMDISARM_AIRMODE : RC_Channel::AUX_FUNC::ARMDISARM);
+#else
+    rc().convert_options(RC_Channel::AUX_FUNC::ARMDISARM_UNUSED, RC_Channel::AUX_FUNC::ARMDISARM);
+#endif
+    rc().init();
 
-#if HIL_SUPPORT
-    if (g.hil_mode == 1) {
-        // set sensors to HIL mode
-        ins.set_hil_mode();
-        compass.set_hil_mode();
-        barometer.set_hil_mode();
-    }
+#if AP_RELAY_ENABLED
+    relay.init();
 #endif
 
-#if CONFIG_HAL_BOARD == HAL_BOARD_PX4
-    // this must be before BoardConfig.init() so if
-    // BRD_SAFETYENABLE==0 then we don't have safety off yet
-    for (uint8_t tries=0; tries<10; tries++) {
-        if (setup_failsafe_mixing()) {
-            break;
-        }
-        hal.scheduler->delay(10);
-    }
-#endif
+    // initialise notify system
+    notify.init();
+    notify_mode(*control_mode);
 
-    BoardConfig.init();
+    init_rc_out_main();
 
-    // initialise serial ports
-    serial_manager.init();
-
-    // allow servo set on all channels except first 4
-    ServoRelayEvents.set_channel_mask(0xFFF0);
-
-    set_control_channels();
-
-    // keep a record of how many resets have happened. This can be
-    // used to detect in-flight resets
-    g.num_resets.set_and_save(g.num_resets+1);
-
-    // init baro before we start the GCS, so that the CLI baro test works
+    // init baro
     barometer.init();
 
+#if AP_RANGEFINDER_ENABLED
     // initialise rangefinder
-    init_rangefinder();
+    rangefinder.set_log_rfnd_bit(MASK_LOG_SONAR);
+    rangefinder.init(ROTATION_PITCH_270);
+#endif
 
     // initialise battery monitoring
     battery.init();
 
+#if AP_RSSI_ENABLED
+    rssi.init();
+#endif
+
+#if AP_RPM_ENABLED
     rpm_sensor.init();
-
-    // init the GCS
-    gcs[0].setup_uart(serial_manager, AP_SerialManager::SerialProtocol_Console, 0);
-
-    // we start by assuming USB connected, as we initialed the serial
-    // port with SERIAL0_BAUD. check_usb_mux() fixes this if need be.    
-    usb_connected = true;
-    check_usb_mux();
-
-    // setup serial port for telem1
-    gcs[1].setup_uart(serial_manager, AP_SerialManager::SerialProtocol_MAVLink, 0);
-
-    // setup serial port for telem2
-    gcs[2].setup_uart(serial_manager, AP_SerialManager::SerialProtocol_MAVLink, 1);
-
-    // setup serial port for fourth telemetry port (not used by default)
-    gcs[3].setup_uart(serial_manager, AP_SerialManager::SerialProtocol_MAVLink, 2);
-
-    // setup frsky
-#if FRSKY_TELEM_ENABLED == ENABLED
-    frsky_telemetry.init(serial_manager);
 #endif
 
-    mavlink_system.sysid = g.sysid_this_mav;
+    // setup telem slots with serial ports
+    gcs().setup_uarts();
 
-#if LOGGING_ENABLED == ENABLED
-    log_init();
+
+#if OSD_ENABLED
+    osd.init();
 #endif
 
-    // initialise airspeed sensor
-    airspeed.init();
+    AP::compass().set_log_bit(MASK_LOG_COMPASS);
+    AP::compass().init();
 
-    if (g.compass_enabled==true) {
-        bool compass_ok = compass.init() && compass.read();
-#if HIL_SUPPORT
-    if (!is_zero(g.hil_mode)) {
-        compass_ok = true;
-    }
+#if AP_AIRSPEED_ENABLED
+    airspeed.set_fixedwing_parameters(&aparm);
+    airspeed.set_log_bit(MASK_LOG_IMU);
 #endif
-        if (!compass_ok) {
-            cliSerial->println("Compass initialisation failed!");
-            g.compass_enabled = false;
-        } else {
-            ahrs.set_compass(&compass);
-        }
-    }
-    
-#if OPTFLOW == ENABLED
-    // make optflow available to libraries
-    ahrs.set_optflow(&optflow);
-#endif
-
-    // Register mavlink_delay_cb, which will run anytime you have
-    // more than 5ms remaining in your call to hal.scheduler->delay
-    hal.scheduler->register_delay_callback(mavlink_delay_cb_static, 5);
-
-    // give AHRS the airspeed sensor
-    ahrs.set_airspeed(&airspeed);
 
     // GPS Initialization
-    gps.init(&DataFlash, serial_manager);
+    gps.set_log_gps_bit(MASK_LOG_GPS);
+    gps.init();
 
     init_rc_in();               // sets up rc channels from radio
 
-    relay.init();
-
-#if MOUNT == ENABLED
+#if HAL_MOUNT_ENABLED
     // initialise camera mount
-    camera_mount.init(&DataFlash, serial_manager);
+    camera_mount.init();
+#endif
+
+#if AP_CAMERA_ENABLED
+    // initialise camera
+    camera.init();
+#endif
+
+#if AP_LANDINGGEAR_ENABLED
+    // initialise landing gear position
+    g2.landing_gear.init();
 #endif
 
 #if FENCE_TRIGGERED_PIN > 0
@@ -215,76 +101,25 @@ void Plane::init_ardupilot()
      */
     hal.scheduler->register_timer_failsafe(failsafe_check_static, 1000);
 
-#if CLI_ENABLED == ENABLED
-    if (g.cli_enabled == 1) {
-        const char *msg = "\nPress ENTER 3 times to start interactive setup\n";
-        cliSerial->println(msg);
-        if (gcs[1].initialised && (gcs[1].get_uart() != NULL)) {
-            gcs[1].get_uart()->println(msg);
-        }
-        if (num_gcs > 2 && gcs[2].initialised && (gcs[2].get_uart() != NULL)) {
-            gcs[2].get_uart()->println(msg);
-        }
-    }
-#endif // CLI_ENABLED
-
-    init_capabilities();
-
-    startup_ground();
-
+#if HAL_QUADPLANE_ENABLED
     quadplane.setup();
-
-    // don't initialise rc output until after quadplane is setup as
-    // that can change initial values of channels
-    init_rc_out();
-    
-    // choose the nav controller
-    set_nav_controller();
-
-    set_mode((FlightMode)g.initial_mode.get());
-
-    // set the correct flight mode
-    // ---------------------------
-    reset_control_switch();
-
-    // initialise sensor
-#if OPTFLOW == ENABLED
-    optflow.init();
 #endif
 
-}
+    AP_Param::reload_defaults_file(true);
 
-//********************************************************************************
-//This function does all the calibrations, etc. that we need during a ground start
-//********************************************************************************
-void Plane::startup_ground(void)
-{
-    set_mode(INITIALISING);
-
-    gcs_send_text(MAV_SEVERITY_INFO,"<startup_ground> Ground start");
+    set_mode(mode_initializing, ModeReason::INITIALISED);
 
 #if (GROUND_START_DELAY > 0)
-    gcs_send_text(MAV_SEVERITY_NOTICE,"<startup_ground> With delay");
+    gcs().send_text(MAV_SEVERITY_NOTICE,"Ground start with delay");
     delay(GROUND_START_DELAY * 1000);
+#else
+    gcs().send_text(MAV_SEVERITY_INFO,"Ground start");
 #endif
-
-    // Makes the servos wiggle
-    // step 1 = 1 wiggle
-    // -----------------------
-    if (ins.gyro_calibration_timing() != AP_InertialSensor::GYRO_CAL_NEVER) {
-        demo_servos(1);
-    }
 
     //INS ground start
     //------------------------
     //
-    startup_INS_ground();
-
-    // read the radio to set trims
-    // ---------------------------
-    if (g.trim_rc_at_start != 0) {
-        trim_radio();
-    }
+    startup_INS();
 
     // Save the settings for in-air restart
     // ------------------------------------
@@ -293,267 +128,267 @@ void Plane::startup_ground(void)
     // initialise mission library
     mission.init();
 
-    // Makes the servos wiggle - 3 times signals ready to fly
-    // -----------------------
-    if (ins.gyro_calibration_timing() != AP_InertialSensor::GYRO_CAL_NEVER) {
-        demo_servos(3);
-    }
+    // initialise AP_Logger library
+#if HAL_LOGGING_ENABLED
+    logger.setVehicle_Startup_Writer(
+        FUNCTOR_BIND(&plane, &Plane::Log_Write_Vehicle_Startup_Messages, void)
+        );
+#endif
 
     // reset last heartbeat time, so we don't trigger failsafe on slow
     // startup
-    failsafe.last_heartbeat_ms = millis();
+    gcs().sysid_myggcs_seen(AP_HAL::millis());
 
-    // we don't want writes to the serial port to cause us to pause
-    // mid-flight, so set the serial ports non-blocking once we are
-    // ready to fly
-    serial_manager.set_blocking_writes_all(false);
+    // don't initialise aux rc output until after quadplane is setup as
+    // that can change initial values of channels
+    init_rc_out_aux();
 
-    ins.set_raw_logging(should_log(MASK_LOG_IMU_RAW));
-    ins.set_dataflash(&DataFlash);    
+    if (g2.oneshot_mask != 0) {
+        hal.rcout->set_output_mode(g2.oneshot_mask, AP_HAL::RCOutput::MODE_PWM_ONESHOT);
+    }
+    hal.rcout->set_dshot_esc_type(SRV_Channels::get_dshot_esc_type());
 
-    gcs_send_text(MAV_SEVERITY_INFO,"Ready to fly");
+    set_mode_by_number((enum Mode::Number)g.initial_mode.get(), ModeReason::INITIALISED);
+
+    // set the correct flight mode
+    // ---------------------------
+    rc().reset_mode_switch();
+
+    // initialise sensor
+#if AP_OPTICALFLOW_ENABLED
+    if (optflow.enabled()) {
+        optflow.init(-1);
+    }
+#endif
+
+#if AC_PRECLAND_ENABLED
+    // scheduler table specifies 400Hz, but we can call it no faster
+    // than the scheduler loop rate:
+    g2.precland.init(MIN(400, scheduler.get_loop_rate_hz()));
+#endif
+
+#if AP_ICENGINE_ENABLED
+    g2.ice_control.init();
+#endif
+
 }
 
-enum FlightMode Plane::get_previous_mode() {
-    return previous_mode; 
-}
-
-void Plane::set_mode(enum FlightMode mode)
-{
-    if(control_mode == mode) {
-        // don't switch modes if we are already in the correct mode.
-        return;
-    }
-    if(g.auto_trim > 0 && control_mode == MANUAL)
-        trim_control_surfaces();
-
-    // perform any cleanup required for prev flight mode
-    exit_mode(control_mode);
-
-    // cancel inverted flight
-    auto_state.inverted_flight = false;
-
-    // don't cross-track when starting a mission
-    auto_state.next_wp_no_crosstrack = true;
-
-    // reset landing check
-    auto_state.checked_for_autoland = false;
-
-    // reset go around command
-    auto_state.commanded_go_around = false;
-
-    // zero locked course
-    steer_state.locked_course_err = 0;
-
-    // reset crash detection
-    crash_state.is_crashed = false;
-    crash_state.impact_detected = false;
-
-    // always reset this because we don't know who called set_mode. In evasion
-    // behavior you should set this flag after set_mode so you know the evasion
-    // logic is controlling the mode. This allows manual override of the mode
-    // to exit evasion behavior automatically but if the mode is manually switched
-    // then we won't resume AUTO after an evasion
-    adsb_state.is_evading = false;
-
-    // set mode
-    previous_mode = control_mode;
-    control_mode = mode;
-
-    if (previous_mode == AUTOTUNE && control_mode != AUTOTUNE) {
-        // restore last gains
-        autotune_restore();
-    }
-
-    // zero initial pitch and highest airspeed on mode change
-    auto_state.highest_airspeed = 0;
-    auto_state.initial_pitch_cd = ahrs.pitch_sensor;
-
-    // disable taildrag takeoff on mode change
-    auto_state.fbwa_tdrag_takeoff_mode = false;
-
-    // start with previous WP at current location
-    prev_WP_loc = current_loc;
-
-    // new mode means new loiter
-    loiter.start_time_ms = 0;
-
-    // assume non-VTOL mode
-    auto_state.vtol_mode = false;
-    
-    switch(control_mode)
-    {
-    case INITIALISING:
-        auto_throttle_mode = true;
-        break;
-
-    case MANUAL:
-    case STABILIZE:
-    case TRAINING:
-    case FLY_BY_WIRE_A:
-        auto_throttle_mode = false;
-        break;
-
-    case AUTOTUNE:
-        auto_throttle_mode = false;
-        autotune_start();
-        break;
-
-    case ACRO:
-        auto_throttle_mode = false;
-        acro_state.locked_roll = false;
-        acro_state.locked_pitch = false;
-        break;
-        
-    case CRUISE:
-        auto_throttle_mode = true;
-        cruise_state.locked_heading = false;
-        cruise_state.lock_timer_ms = 0;
-        set_target_altitude_current();
-        break;
-
-    case FLY_BY_WIRE_B:
-        auto_throttle_mode = true;
-        set_target_altitude_current();
-        break;
-
-    case CIRCLE:
-        // the altitude to circle at is taken from the current altitude
-        auto_throttle_mode = true;
-        next_WP_loc.alt = current_loc.alt;
-        break;
-
-    case AUTO:
-        auto_throttle_mode = true;
-        auto_state.vtol_mode = false;
-        next_WP_loc = prev_WP_loc = current_loc;
-        // start or resume the mission, based on MIS_AUTORESET
-        mission.start_or_resume();
-        break;
-
-    case RTL:
-        auto_throttle_mode = true;
-        prev_WP_loc = current_loc;
-        do_RTL();
-        break;
-
-    case LOITER:
-        auto_throttle_mode = true;
-        do_loiter_at_location();
-        break;
-
-    case GUIDED:
-        auto_throttle_mode = true;
-        guided_throttle_passthru = false;
-        /*
-          when entering guided mode we set the target as the current
-          location. This matches the behaviour of the copter code
-        */
-        guided_WP_loc = current_loc;
-        set_guided_WP();
-        break;
-
-    case QSTABILIZE:
-    case QHOVER:
-    case QLOITER:
-        if (!quadplane.init_mode()) {
-            control_mode = previous_mode;
-        } else {
-            auto_throttle_mode = false;
-            auto_state.vtol_mode = true;
-        }
-        break;
-    }
-
-    // start with throttle suppressed in auto_throttle modes
-    throttle_suppressed = auto_throttle_mode;
-
-    if (should_log(MASK_LOG_MODE))
-        DataFlash.Log_Write_Mode(control_mode);
-
-    // reset attitude integrators on mode change
-    rollController.reset_I();
-    pitchController.reset_I();
-    yawController.reset_I();    
-    steerController.reset_I();    
-}
-
+#if AP_FENCE_ENABLED
 /*
-  set_mode() wrapper for MAVLink SET_MODE
+  return true if a mode reason is an automatic mode change due to
+  landing sequencing.
  */
-bool Plane::mavlink_set_mode(uint8_t mode)
+static bool mode_reason_is_landing_sequence(const ModeReason reason)
 {
-    switch (mode) {
-    case MANUAL:
-    case CIRCLE:
-    case STABILIZE:
-    case TRAINING:
-    case ACRO:
-    case FLY_BY_WIRE_A:
-    case AUTOTUNE:
-    case FLY_BY_WIRE_B:
-    case CRUISE:
-    case GUIDED:
-    case AUTO:
-    case RTL:
-    case LOITER:
-    case QSTABILIZE:
-    case QHOVER:
-    case QLOITER:
-        set_mode((enum FlightMode)mode);
+    switch (reason) {
+    case ModeReason::RTL_COMPLETE_SWITCHING_TO_FIXEDWING_AUTOLAND:
+    case ModeReason::RTL_COMPLETE_SWITCHING_TO_VTOL_LAND_RTL:
+    case ModeReason::QRTL_INSTEAD_OF_RTL:
+    case ModeReason::QLAND_INSTEAD_OF_RTL:
         return true;
+    default:
+        break;
     }
     return false;
 }
+#endif // AP_FENCE_ENABLED
 
-// exit_mode - perform any cleanup required when leaving a flight mode
-void Plane::exit_mode(enum FlightMode mode)
+// Check if this mode can be entered from the GCS
+bool Plane::gcs_mode_enabled(const Mode::Number mode_num) const
 {
-    // stop mission when we leave auto
-    if (mode == AUTO) {
-        if (mission.state() == AP_Mission::MISSION_RUNNING) {
-            mission.stop();
+    // List of modes that can be blocked, index is bit number in parameter bitmask
+    static const uint8_t mode_list [] {
+        (uint8_t)Mode::Number::MANUAL,
+        (uint8_t)Mode::Number::CIRCLE,
+        (uint8_t)Mode::Number::STABILIZE,
+        (uint8_t)Mode::Number::TRAINING,
+        (uint8_t)Mode::Number::ACRO,
+        (uint8_t)Mode::Number::FLY_BY_WIRE_A,
+        (uint8_t)Mode::Number::FLY_BY_WIRE_B,
+        (uint8_t)Mode::Number::CRUISE,
+        (uint8_t)Mode::Number::AUTOTUNE,
+        (uint8_t)Mode::Number::AUTO,
+        (uint8_t)Mode::Number::LOITER,
+        (uint8_t)Mode::Number::TAKEOFF,
+        (uint8_t)Mode::Number::AVOID_ADSB,
+        (uint8_t)Mode::Number::GUIDED,
+        (uint8_t)Mode::Number::THERMAL,
+#if HAL_QUADPLANE_ENABLED
+        (uint8_t)Mode::Number::QSTABILIZE,
+        (uint8_t)Mode::Number::QHOVER,
+        (uint8_t)Mode::Number::QLOITER,
+        (uint8_t)Mode::Number::QACRO,
+#if QAUTOTUNE_ENABLED
+        (uint8_t)Mode::Number::QAUTOTUNE
+#endif
+#endif
+    };
 
-            if (mission.get_current_nav_cmd().id == MAV_CMD_NAV_LAND)
-            {
-                restart_landing_sequence();
-            }
+    return !block_GCS_mode_change((uint8_t)mode_num, mode_list, ARRAY_SIZE(mode_list));
+}
+
+bool Plane::set_mode(Mode &new_mode, const ModeReason reason)
+{
+
+    if (control_mode == &new_mode) {
+        // don't switch modes if we are already in the correct mode.
+        // only make happy noise if using a different method to switch, this stops beeping for repeated change mode requests from GCS
+        if ((reason != control_mode_reason) && (reason != ModeReason::INITIALISED)) {
+            AP_Notify::events.user_mode_change = 1;
         }
-        auto_state.started_flying_in_auto_ms = 0;
+        return true;
     }
+
+#if HAL_QUADPLANE_ENABLED
+    if (new_mode.is_vtol_mode() && !plane.quadplane.available()) {
+        // dont try and switch to a Q mode if quadplane is not enabled and initalized
+        gcs().send_text(MAV_SEVERITY_INFO,"Q_ENABLE 0");
+        // make sad noise
+        if (reason != ModeReason::INITIALISED) {
+            AP_Notify::events.user_mode_change_failed = 1;
+        }
+        return false;
+    }
+
+#else
+    if (new_mode.is_vtol_mode()) {
+        INTERNAL_ERROR(AP_InternalError::error_t::flow_of_control);
+        gcs().send_text(MAV_SEVERITY_INFO,"HAL_QUADPLANE_ENABLED=0");
+        // make sad noise
+        if (reason != ModeReason::INITIALISED) {
+            AP_Notify::events.user_mode_change_failed = 1;
+        }
+        return false;
+    }
+#endif  // HAL_QUADPLANE_ENABLED
+
+#if AP_FENCE_ENABLED
+    // may not be allowed to change mode if recovering from fence breach
+    if (hal.util->get_soft_armed() &&
+        fence.enabled() &&
+        fence.option_enabled(AC_Fence::OPTIONS::DISABLE_MODE_CHANGE) &&
+        fence.get_breaches() &&
+        in_fence_recovery() &&
+        !mode_reason_is_landing_sequence(reason)) {
+        gcs().send_text(MAV_SEVERITY_NOTICE,"Mode change to %s denied, in fence recovery", new_mode.name());
+        AP_Notify::events.user_mode_change_failed = 1;
+        return false;
+    }
+#endif
+
+    // Check if GCS mode change is disabled via parameter
+    if ((reason == ModeReason::GCS_COMMAND) && !gcs_mode_enabled(new_mode.mode_number())) {
+        gcs().send_text(MAV_SEVERITY_NOTICE,"Mode change to %s denied, GCS entry disabled (FLTMODE_GCSBLOCK)", new_mode.name());
+        return false;
+    }
+
+    // backup current control_mode and previous_mode
+    Mode &old_previous_mode = *previous_mode;
+    Mode &old_mode = *control_mode;
+
+    // update control_mode assuming success
+    // TODO: move these to be after enter() once start_command_callback() no longer checks control_mode
+    previous_mode = control_mode;
+    control_mode = &new_mode;
+    const ModeReason  old_previous_mode_reason = previous_mode_reason;
+    previous_mode_reason = control_mode_reason;
+    control_mode_reason = reason;
+
+    // attempt to enter new mode
+    if (!new_mode.enter()) {
+        // Log error that we failed to enter desired flight mode
+        gcs().send_text(MAV_SEVERITY_WARNING, "Flight mode change failed");
+
+        // we failed entering new mode, roll back to old
+        previous_mode = &old_previous_mode;
+        control_mode = &old_mode;
+        control_mode_reason = previous_mode_reason;
+        previous_mode_reason = old_previous_mode_reason;
+
+        // make sad noise
+        if (reason != ModeReason::INITIALISED) {
+            AP_Notify::events.user_mode_change_failed = 1;
+        }
+        return false;
+    }
+
+    // exit previous mode
+    old_mode.exit();
+
+    // log and notify mode change
+#if HAL_LOGGING_ENABLED
+    logger.Write_Mode(control_mode->mode_number(), control_mode_reason);
+#endif
+    notify_mode(*control_mode);
+    gcs().send_message(MSG_HEARTBEAT);
+
+    // make happy noise
+    if (reason != ModeReason::INITIALISED) {
+        AP_Notify::events.user_mode_change = 1;
+    }
+    return true;
+}
+
+bool Plane::set_mode(const uint8_t new_mode, const ModeReason reason)
+{
+    static_assert(sizeof(Mode::Number) == sizeof(new_mode), "The new mode can't be mapped to the vehicles mode number");
+
+    return set_mode_by_number(static_cast<Mode::Number>(new_mode), reason);
+}
+
+bool Plane::set_mode_by_number(const Mode::Number new_mode_number, const ModeReason reason)
+{
+    Mode *new_mode = plane.mode_from_mode_num(new_mode_number);
+    if (new_mode == nullptr) {
+        notify_no_such_mode(new_mode_number);
+        return false;
+    }
+    return set_mode(*new_mode, reason);
 }
 
 void Plane::check_long_failsafe()
 {
-    uint32_t tnow = millis();
+    const uint32_t gcs_last_seen_ms = gcs().sysid_myggcs_last_seen_time_ms();
+    const uint32_t tnow = millis();
     // only act on changes
     // -------------------
-    if(failsafe.state != FAILSAFE_LONG && failsafe.state != FAILSAFE_GCS && flight_stage != AP_SpdHgtControl::FLIGHT_LAND_FINAL &&
-            flight_stage != AP_SpdHgtControl::FLIGHT_LAND_APPROACH) {
-        if (failsafe.state == FAILSAFE_SHORT &&
-                   (tnow - failsafe.ch3_timer_ms) > g.long_fs_timeout*1000) {
-            failsafe_long_on_event(FAILSAFE_LONG);
-        } else if (g.gcs_heartbeat_fs_enabled == GCS_FAILSAFE_HB_AUTO && control_mode == AUTO &&
-                   failsafe.last_heartbeat_ms != 0 &&
-                   (tnow - failsafe.last_heartbeat_ms) > g.long_fs_timeout*1000) {
-            failsafe_long_on_event(FAILSAFE_GCS);
-        } else if (g.gcs_heartbeat_fs_enabled == GCS_FAILSAFE_HEARTBEAT &&
-                   failsafe.last_heartbeat_ms != 0 &&
-                   (tnow - failsafe.last_heartbeat_ms) > g.long_fs_timeout*1000) {
-            failsafe_long_on_event(FAILSAFE_GCS);
+    if (failsafe.state != FAILSAFE_LONG && failsafe.state != FAILSAFE_GCS && flight_stage != AP_FixedWing::FlightStage::LAND) {
+        uint32_t radio_timeout_ms = failsafe.last_valid_rc_ms;
+        if (failsafe.state == FAILSAFE_SHORT) {
+            // time is relative to when short failsafe enabled
+            radio_timeout_ms = failsafe.short_timer_ms;
+        }
+        if (failsafe.rc_failsafe &&
+            (tnow - radio_timeout_ms) > g.fs_timeout_long*1000) {
+            failsafe_long_on_event(FAILSAFE_LONG, ModeReason::RADIO_FAILSAFE);
+        } else if (g.gcs_heartbeat_fs_enabled == GCS_FAILSAFE_HB_AUTO && control_mode == &mode_auto &&
+                   gcs_last_seen_ms != 0 &&
+                   (tnow - gcs_last_seen_ms) > g.fs_timeout_long*1000) {
+            failsafe_long_on_event(FAILSAFE_GCS, ModeReason::GCS_FAILSAFE);
+        } else if ((g.gcs_heartbeat_fs_enabled == GCS_FAILSAFE_HEARTBEAT ||
+                    g.gcs_heartbeat_fs_enabled == GCS_FAILSAFE_HB_RSSI) &&
+                   gcs_last_seen_ms != 0 &&
+                   (tnow - gcs_last_seen_ms) > g.fs_timeout_long*1000) {
+            failsafe_long_on_event(FAILSAFE_GCS, ModeReason::GCS_FAILSAFE);
         } else if (g.gcs_heartbeat_fs_enabled == GCS_FAILSAFE_HB_RSSI && 
-                   gcs[0].last_radio_status_remrssi_ms != 0 &&
-                   (tnow - gcs[0].last_radio_status_remrssi_ms) > g.long_fs_timeout*1000) {
-            failsafe_long_on_event(FAILSAFE_GCS);
+                   gcs().chan(0) != nullptr &&
+                   gcs().chan(0)->last_radio_status_remrssi_ms() != 0 &&
+                   (tnow - gcs().chan(0)->last_radio_status_remrssi_ms()) > g.fs_timeout_long*1000) {
+            failsafe_long_on_event(FAILSAFE_GCS, ModeReason::GCS_FAILSAFE);
         }
     } else {
+        uint32_t timeout_seconds = g.fs_timeout_long;
+        if (g.fs_action_short != FS_ACTION_SHORT_DISABLED) {
+            // avoid dropping back into short timeout
+            timeout_seconds = g.fs_timeout_short;
+        }
         // We do not change state but allow for user to change mode
         if (failsafe.state == FAILSAFE_GCS && 
-            (tnow - failsafe.last_heartbeat_ms) < g.short_fs_timeout*1000) {
-            failsafe.state = FAILSAFE_NONE;
+            (tnow - gcs_last_seen_ms) < timeout_seconds*1000) {
+            failsafe_long_off_event(ModeReason::GCS_FAILSAFE);
         } else if (failsafe.state == FAILSAFE_LONG && 
-                   !failsafe.ch3_failsafe) {
-            failsafe.state = FAILSAFE_NONE;
+                   !failsafe.rc_failsafe) {
+            failsafe_long_off_event(ModeReason::RADIO_FAILSAFE);
         }
     }
 }
@@ -562,253 +397,75 @@ void Plane::check_short_failsafe()
 {
     // only act on changes
     // -------------------
-    if(failsafe.state == FAILSAFE_NONE && (flight_stage != AP_SpdHgtControl::FLIGHT_LAND_FINAL &&
-            flight_stage != AP_SpdHgtControl::FLIGHT_LAND_APPROACH)) {
-        if(failsafe.ch3_failsafe) {                                              // The condition is checked and the flag ch3_failsafe is set in radio.pde
-            failsafe_short_on_event(FAILSAFE_SHORT);
+    if (g.fs_action_short != FS_ACTION_SHORT_DISABLED &&
+       failsafe.state == FAILSAFE_NONE &&
+       flight_stage != AP_FixedWing::FlightStage::LAND) {
+        // The condition is checked and the flag rc_failsafe is set in radio.cpp
+        if(failsafe.rc_failsafe) {
+            failsafe_short_on_event(FAILSAFE_SHORT, ModeReason::RADIO_FAILSAFE);
         }
     }
 
     if(failsafe.state == FAILSAFE_SHORT) {
-        if(!failsafe.ch3_failsafe) {
-            failsafe_short_off_event();
+        if(!failsafe.rc_failsafe || g.fs_action_short == FS_ACTION_SHORT_DISABLED) {
+            failsafe_short_off_event(ModeReason::RADIO_FAILSAFE);
         }
     }
 }
 
 
-void Plane::startup_INS_ground(void)
+void Plane::startup_INS(void)
 {
-#if HIL_SUPPORT
-    if (g.hil_mode == 1) {
-        while (barometer.get_last_update() == 0) {
-            // the barometer begins updating when we get the first
-            // HIL_STATE message
-            gcs_send_text(MAV_SEVERITY_WARNING, "Waiting for first HIL_STATE message");
-            hal.scheduler->delay(1000);
-        }
-    }
-#endif
-
     if (ins.gyro_calibration_timing() != AP_InertialSensor::GYRO_CAL_NEVER) {
-        gcs_send_text(MAV_SEVERITY_ALERT, "Beginning INS calibration. Do not move plane");
-        hal.scheduler->delay(100);
+        gcs().send_text(MAV_SEVERITY_ALERT, "Beginning INS calibration. Do not move plane");
+    } else {
+        gcs().send_text(MAV_SEVERITY_ALERT, "Skipping INS calibration");
     }
 
     ahrs.init();
     ahrs.set_fly_forward(true);
-    ahrs.set_vehicle_class(AHRS_VEHICLE_FIXED_WING);
-    ahrs.set_wind_estimation(true);
+    ahrs.set_vehicle_class(AP_AHRS::VehicleClass::FIXED_WING);
+    ahrs.set_wind_estimation_enabled(true);
 
     ins.init(scheduler.get_loop_rate_hz());
     ahrs.reset();
 
     // read Baro pressure at ground
     //-----------------------------
-    init_barometer();
-
-    if (airspeed.enabled()) {
-        // initialize airspeed sensor
-        // --------------------------
-        zero_airspeed(true);
-    } else {
-        gcs_send_text(MAV_SEVERITY_WARNING,"No airspeed");
-    }
+    barometer.set_log_baro_bit(MASK_LOG_IMU);
+    barometer.calibrate();
 }
 
-// updates the status of the notify objects
-// should be called at 50hz
-void Plane::update_notify()
+// sets notify object flight mode information
+void Plane::notify_mode(const Mode& mode)
 {
-    notify.update();
+    notify.flags.flight_mode = mode.mode_number();
+    notify.set_flight_mode_str(mode.name4());
 }
 
-void Plane::resetPerfData(void) 
-{
-    mainLoop_count                  = 0;
-    G_Dt_max                        = 0;
-    G_Dt_min                        = 0;
-    perf_mon_timer                  = millis();
-}
-
-
-void Plane::check_usb_mux(void)
-{
-    bool usb_check = hal.gpio->usb_connected();
-    if (usb_check == usb_connected) {
-        return;
-    }
-
-    // the user has switched to/from the telemetry port
-    usb_connected = usb_check;
-}
-
-
-void Plane::print_flight_mode(AP_HAL::BetterStream *port, uint8_t mode)
-{
-    switch (mode) {
-    case MANUAL:
-        port->print("Manual");
-        break;
-    case CIRCLE:
-        port->print("Circle");
-        break;
-    case STABILIZE:
-        port->print("Stabilize");
-        break;
-    case TRAINING:
-        port->print("Training");
-        break;
-    case ACRO:
-        port->print("ACRO");
-        break;
-    case FLY_BY_WIRE_A:
-        port->print("FBW_A");
-        break;
-    case AUTOTUNE:
-        port->print("AUTOTUNE");
-        break;
-    case FLY_BY_WIRE_B:
-        port->print("FBW_B");
-        break;
-    case CRUISE:
-        port->print("CRUISE");
-        break;
-    case AUTO:
-        port->print("AUTO");
-        break;
-    case RTL:
-        port->print("RTL");
-        break;
-    case LOITER:
-        port->print("Loiter");
-        break;
-    case GUIDED:
-        port->print("Guided");
-        break;
-    default:
-        port->printf("Mode(%u)", (unsigned)mode);
-        break;
-    }
-}
-
-#if CLI_ENABLED == ENABLED
-void Plane::print_comma(void)
-{
-    cliSerial->print(",");
-}
-#endif
-
-/*
-  write to a servo
- */
-void Plane::servo_write(uint8_t ch, uint16_t pwm)
-{
-#if HIL_SUPPORT
-    if (g.hil_mode==1 && !g.hil_servos) {
-        if (ch < 8) {
-            RC_Channel::rc_channel(ch)->radio_out = pwm;
-        }
-        return;
-    }
-#endif
-    hal.rcout->enable_ch(ch);
-    hal.rcout->write(ch, pwm);
-}
-
+#if HAL_LOGGING_ENABLED
 /*
   should we log a message type now?
  */
 bool Plane::should_log(uint32_t mask)
 {
-#if LOGGING_ENABLED == ENABLED
-    if (!(mask & g.log_bitmask) || in_mavlink_delay) {
-        return false;
-    }
-    bool ret = hal.util->get_soft_armed() || (g.log_bitmask & MASK_LOG_WHEN_DISARMED) != 0;
-    if (ret && !DataFlash.logging_started() && !in_log_download) {
-        // we have to set in_mavlink_delay to prevent logging while
-        // writing headers
-        start_logging();
-    }
-    return ret;
-#else
-    return false;
-#endif
-}
-
-/*
-  send FrSky telemetry. Should be called at 5Hz by scheduler
- */
-#if FRSKY_TELEM_ENABLED == ENABLED
-void Plane::frsky_telemetry_send(void)
-{
-    frsky_telemetry.send_frames((uint8_t)control_mode);
+    return logger.should_log(mask);
 }
 #endif
 
-
 /*
-  return throttle percentage from 0 to 100
+  return throttle percentage from 0 to 100 for normal use and -100 to 100 when using reverse thrust
  */
-uint8_t Plane::throttle_percentage(void)
+int8_t Plane::throttle_percentage(void)
 {
-    if (auto_state.vtol_mode) {
-        return quadplane.throttle_percentage();
+#if HAL_QUADPLANE_ENABLED
+    if (quadplane.in_vtol_mode() && !quadplane.tailsitter.in_vtol_transition()) {
+        return quadplane.motors->get_throttle_out() * 100.0;
     }
-    // to get the real throttle we need to use norm_output() which
-    // returns a number from -1 to 1.
-    return constrain_int16(50*(channel_throttle->norm_output()+1), 0, 100);
-}
-
-/*
-  update AHRS soft arm state and log as needed
- */
-void Plane::change_arm_state(void)
-{
-    Log_Arm_Disarm();
-    hal.util->set_soft_armed(arming.is_armed() &&
-                             hal.util->safety_switch_state() != AP_HAL::Util::SAFETY_DISARMED);
-    quadplane.set_armed(hal.util->get_soft_armed());
-}
-
-/*
-  arm motors
- */
-bool Plane::arm_motors(AP_Arming::ArmingMethod method)
-{
-    if (!arming.arm(method)) {
-        return false;
+#endif
+    float throttle = SRV_Channels::get_output_scaled(SRV_Channel::k_throttle);
+    if (!have_reverse_thrust()) {
+        return constrain_int16(throttle, 0, 100);
     }
-
-    // only log if arming was successful
-    channel_throttle->enable_out();
-
-    change_arm_state();
-    return true;
-}
-
-/*
-  disarm motors
- */
-bool Plane::disarm_motors(void)
-{
-    if (!arming.disarm()) {
-        return false;
-    }
-    if (arming.arming_required() == AP_Arming::YES_ZERO_PWM) {
-        channel_throttle->disable_out();  
-    }
-    if (control_mode != AUTO) {
-        // reset the mission on disarm if we are not in auto
-        mission.reset();
-    }
-
-    // suppress the throttle in auto-throttle modes
-    throttle_suppressed = auto_throttle_mode;
-    
-    //only log if disarming was successful
-    change_arm_state();
-
-    return true;
+    return constrain_int16(throttle, -100, 100);
 }

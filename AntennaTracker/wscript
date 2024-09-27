@@ -5,14 +5,12 @@ def build(bld):
     vehicle = bld.path.name
     bld.ap_stlib(
         name=vehicle + '_libs',
-        vehicle=vehicle,
-        libraries=bld.ap_common_vehicle_libraries() + [
-            'PID',
-        ],
-        use='mavlink',
+        ap_vehicle=vehicle,
+        ap_libraries=bld.ap_common_vehicle_libraries(),
     )
 
     bld.ap_program(
         program_name='antennatracker',
+        program_groups=['bin', 'antennatracker'],
         use=vehicle + '_libs',
     )

@@ -18,8 +18,7 @@
  */
 
 #include <AP_HAL/AP_HAL.h>
-#if CONFIG_HAL_BOARD_SUBTYPE == HAL_BOARD_SUBTYPE_LINUX_BEBOP ||\
-    CONFIG_HAL_BOARD_SUBTYPE == HAL_BOARD_SUBTYPE_LINUX_MINLURE
+#if CONFIG_HAL_BOARD_SUBTYPE == HAL_BOARD_SUBTYPE_LINUX_BEBOP
 #include "VideoIn.h"
 
 #include <errno.h>
@@ -66,8 +65,8 @@ bool VideoIn::open_device(const char *device_path, uint32_t memtype)
     int ret;
 
     _fd = -1;
-    _buffers = NULL;
-    _fd = open(device_path, O_RDWR);
+    _buffers = nullptr;
+    _fd = open(device_path, O_RDWR|O_CLOEXEC);
     _memtype = memtype;
     if (_fd < 0) {
         hal.console->printf("Error opening device %s: %s (%d).\n",
@@ -113,8 +112,8 @@ bool VideoIn::allocate_buffers(uint32_t nbufs)
         return ret;
     }
 
-    buffers = (struct buffer *)malloc(rb.count * sizeof buffers[0]);
-    if (buffers == NULL) {
+    buffers = (struct buffer *)calloc(rb.count, sizeof buffers[0]);
+    if (buffers == nullptr) {
         hal.console->printf("Unable to allocate buffers\n");
         return false;
     }

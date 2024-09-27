@@ -1,8 +1,7 @@
-#ifndef __AP_HAL_LINUX_CONSOLEDEVICE_UDP_H__
-#define __AP_HAL_LINUX_CONSOLEDEVICE_UDP_H__
+#pragma once
 
 #include "SerialDevice.h"
-#include <AP_HAL/utility/Socket.h>
+#include <AP_HAL/utility/Socket_native.h>
 
 class ConsoleDevice: public SerialDevice {
 public:
@@ -20,6 +19,6 @@ private:
     int _rd_fd = -1;
     int _wr_fd = -1;
     bool _closed = true;
-};
 
-#endif
+    bool _set_signal_handlers(void) const;
+};

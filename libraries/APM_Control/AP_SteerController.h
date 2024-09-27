@@ -1,20 +1,17 @@
-// -*- tab-width: 4; Mode: C++; c-basic-offset: 4; indent-tabs-mode: nil -*-
+#pragma once
 
-#ifndef __AP_STEER_CONTROLLER_H__
-#define __AP_STEER_CONTROLLER_H__
-
-#include <AP_AHRS/AP_AHRS.h>
 #include <AP_Common/AP_Common.h>
-#include <AP_Vehicle/AP_Vehicle.h>
-#include <DataFlash/DataFlash.h>
+#include <AC_PID/AP_PIDInfo.h>
 
 class AP_SteerController {
 public:
-	AP_SteerController(AP_AHRS &ahrs) :
-        _ahrs(ahrs)
-    { 
-		AP_Param::setup_object_defaults(this, var_info);
-	}
+    AP_SteerController()
+    {
+        AP_Param::setup_object_defaults(this, var_info);
+    }
+
+    /* Do not allow copies */
+    CLASS_NO_COPY(AP_SteerController);
 
     /*
       return a steering servo output from -4500 to 4500 given a
@@ -45,10 +42,17 @@ public:
 
 	static const struct AP_Param::GroupInfo var_info[];
 
-    const DataFlash_Class::PID_Info& get_pid_info(void) const { return _pid_info; }
+    const class AP_PIDInfo& get_pid_info(void) const { return _pid_info; }
+
+    void set_reverse(bool reverse) {
+        _reverse = reverse;
+    }
+
+    // Returns true if controller has been run recently
+    bool active() const;
 
 private:
-	AP_Float _tau;
+    AP_Float _tau;
 	AP_Float _K_FF;
 	AP_Float _K_P;
 	AP_Float _K_I;
@@ -58,9 +62,11 @@ private:
 	uint32_t _last_t;
 	float _last_out;
 
-    DataFlash_Class::PID_Info _pid_info {};
+	AP_Float _deratespeed;
+	AP_Float _deratefactor;
+	AP_Float _mindegree;
 
-	AP_AHRS &_ahrs;
+    AP_PIDInfo _pid_info {};
+
+    bool _reverse;
 };
-
-#endif // __AP_STEER_CONTROLLER_H__

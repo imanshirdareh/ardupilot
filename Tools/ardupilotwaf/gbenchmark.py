@@ -1,4 +1,3 @@
-#!/usr/bin/env python
 # encoding: utf-8
 
 """
@@ -6,36 +5,9 @@ gbenchmark is a Waf tool for benchmark builds in Ardupilot
 """
 
 from waflib import Build, Context, Task
+from waflib.Configure import conf
 from waflib.TaskGen import feature, before_method, after_method
 from waflib.Errors import WafError
-
-def _configure_cmake(ctx, bldnode):
-    env = ctx.env
-    my_build_node = bldnode.find_dir(env.GBENCHMARK_BUILD_REL)
-    if not my_build_node:
-        bldnode.make_node(env.GBENCHMARK_BUILD_REL).mkdir()
-
-    prefix_node = bldnode.make_node(env.GBENCHMARK_PREFIX_REL)
-
-    cmake_vars = {
-        'CMAKE_BUILD_TYPE': 'Release',
-        'CMAKE_INSTALL_PREFIX:PATH': prefix_node.abspath(),
-    }
-
-    cmake_vars = ' '.join("-D%s='%s'" % v for v in cmake_vars.items())
-
-    cmd = '%s %s %s %s' % (
-              env.CMAKE[0],
-              env.GBENCHMARK_SRC,
-              cmake_vars,
-              env.GBENCHMARK_GENERATOR_OPTION
-          )
-
-    ctx.cmd_and_log(
-        cmd,
-        cwd=env.GBENCHMARK_BUILD,
-        quiet=Context.BOTH,
-    )
 
 def configure(cfg):
     env = cfg.env
@@ -49,107 +21,43 @@ def configure(cfg):
         )
         return
 
-    cfg.start_msg('Checking for gbenchmark submodule')
-    cmake_lists = cfg.srcnode.find_resource('modules/gbenchmark/CMakeLists.txt')
-    if not cmake_lists:
-        cfg.end_msg('not initialized', color='YELLOW')
-        return
-    cfg.end_msg('yes')
+    cfg.load('cmake')
 
-    cfg.find_program('cmake', mandatory=False)
-
-    if not env.CMAKE:
-        return
-
-    env.GBENCHMARK_CMAKE_GENERATOR = None
-
-    cfg.find_program(['ninja', 'ninja-build'], var='NINJA', mandatory=False)
-    if env.NINJA:
-        env.GBENCHMARK_CMAKE_GENERATOR = 'Ninja'
-
-    env.GBENCHMARK_GENERATOR_OPTION = ''
-    if env.GBENCHMARK_CMAKE_GENERATOR:
-        env.GBENCHMARK_GENERATOR_OPTION = '-G%s' % env.GBENCHMARK_CMAKE_GENERATOR
+    env.GBENCHMARK_PREFIX_REL = 'gbenchmark'
 
     bldnode = cfg.bldnode.make_node(cfg.variant)
-    prefix_node = bldnode.make_node('gbenchmark')
-    my_build_node = bldnode.make_node('gbenchmark_build')
-    my_src_node = cfg.srcnode.find_dir('modules/gbenchmark')
-
-    env.GBENCHMARK_PREFIX_REL = prefix_node.path_from(bldnode)
-    env.GBENCHMARK_BUILD = my_build_node.abspath()
-    env.GBENCHMARK_BUILD_REL = my_build_node.path_from(bldnode)
-    env.GBENCHMARK_SRC = my_src_node.abspath()
-
-    cfg.start_msg('Configuring gbenchmark')
-    try:
-        _configure_cmake(cfg, bldnode)
-        cfg.end_msg('done')
-    except:
-        cfg.end_msg('failed', color='YELLOW')
-        return
+    prefix_node = bldnode.make_node(env.GBENCHMARK_PREFIX_REL)
 
     env.INCLUDES_GBENCHMARK = [prefix_node.make_node('include').abspath()]
     env.LIBPATH_GBENCHMARK = [prefix_node.make_node('lib').abspath()]
     env.LIB_GBENCHMARK = ['benchmark']
 
+    env.append_value('GIT_SUBMODULES', 'gbenchmark')
     env.HAS_GBENCHMARK = True
 
-class gbenchmark_build(Task.Task):
-    def __init__(self, *k, **kw):
-        super(gbenchmark_build, self).__init__(*k, **kw)
+@conf
+def libbenchmark(bld):
+    prefix_node = bld.bldnode.make_node(bld.env.GBENCHMARK_PREFIX_REL)
 
-        bldnode = self.generator.bld.bldnode
-        output_list = [
-            '%s/%s' % (self.env.GBENCHMARK_PREFIX_REL, path)
-            for path in (
-                'include/benchmark/benchmark.h',
-                'include/benchmark/macros.h',
-                'include/benchmark/benchmark_api.h',
-                'include/benchmark/reporter.h',
-                'lib/libbenchmark.a',
-            )
-        ]
-        self.outputs.extend([bldnode.make_node(f) for f in output_list])
+    gbenchmark = bld.cmake(
+        name='gbenchmark',
+        cmake_src='modules/gbenchmark',
+        cmake_bld='gbenchmark_build',
+        cmake_vars=dict(
+            CMAKE_BUILD_TYPE='Release',
+            CMAKE_INSTALL_PREFIX=prefix_node.abspath(),
+            BENCHMARK_ENABLE_GTEST_TESTS='OFF',
+            BENCHMARK_ENABLE_TESTING='OFF',
+        ),
+    )
 
-    def run(self):
-        bld = self.generator.bld
-        cmds = []
-
-        cmake_lists = bld.srcnode.find_resource('modules/gbenchmark/CMakeLists.txt')
-        if not cmake_lists:
-            bld.fatal('Submodule gbenchmark not initialized, please run configure again')
-
-        try:
-            # Generate build system first, if necessary
-            my_build_node = bld.bldnode.find_dir(self.env.GBENCHMARK_BUILD_REL)
-            if not (my_build_node and my_build_node.find_resource('CMakeCache.txt')):
-                _configure_cmake(bld, bld.bldnode)
-
-            # Build gbenchmark
-            cmd = '%s --build %s --target install' % (
-                    self.env.CMAKE[0],
-                    self.env.GBENCHMARK_BUILD
-                  )
-            bld.cmd_and_log(
-                cmd,
-                cwd=self.env.GBENCHMARK_BUILD,
-                quiet=Context.BOTH,
-            )
-            return 0
-        except WafError as e:
-            print(e)
-            if hasattr(e, 'stderr'):
-                print('')
-                print(e.stderr)
-            return 1
-
-    def __str__(self):
-        return 'Google Benchmark'
-
-gbenchmark_build = Task.always_run(Task.update_outputs(gbenchmark_build))
-
-build_task = None
+    prefix_node = bld.bldnode.make_node(bld.env.GBENCHMARK_PREFIX_REL)
+    output_paths = (
+        'lib/libbenchmark.a',
+        'include/benchmark/benchmark.h',
+    )
+    outputs = [prefix_node.make_node(path) for path in output_paths]
+    gbenchmark.build('install', target=outputs)
 
 @feature('gbenchmark')
 @before_method('process_use')
@@ -160,12 +68,10 @@ def append_gbenchmark_use(self):
 
 @feature('gbenchmark')
 @after_method('process_source')
-def wait_for_gbenchmark_build(self):
-    global build_task
-
-    if not build_task:
-        build_task = self.create_task('gbenchmark_build')
+def wait_for_gbenchmark_install(self):
+    gbenchmark_install = self.bld.get_tgen_by_name('gbenchmark_install')
+    gbenchmark_install.post()
 
     for task in self.compiled_tasks:
-        task.set_run_after(build_task)
-        task.dep_nodes.extend(build_task.outputs)
+        task.set_run_after(gbenchmark_install.cmake_build_task)
+        task.dep_nodes.extend(gbenchmark_install.cmake_build_task.outputs)

@@ -1,12 +1,28 @@
-#!/usr/bin/env python
 # encoding: utf-8
 
 """
 gtest is a Waf tool for test builds in Ardupilot
 """
 
+from waflib import Utils
+from waflib.Configure import conf
+
+import boards
+
 def configure(cfg):
     cfg.env.HAS_GTEST = False
+    if cfg.options.disable_tests:
+        return
+
+    board = cfg.get_board()
+    if isinstance(board, boards.chibios):
+        # toolchain is currently broken for gtest
+        cfg.msg(
+            'Gtest',
+            'STM32 boards currently don\'t support compiling gtest',
+            color='YELLOW',
+        )
+        return
 
     if cfg.env.STATIC_LINKING:
         # gtest uses a function (getaddrinfo) that is supposed to be linked
@@ -18,20 +34,17 @@ def configure(cfg):
         )
         return
 
-    cfg.start_msg('Checking for gtest submodule')
-    readme = cfg.srcnode.find_resource('modules/gtest/README')
-    if not readme:
-        cfg.end_msg('not initialized', color='YELLOW')
-        return
-    cfg.end_msg('yes')
-
+    cfg.env.append_value('GIT_SUBMODULES', 'gtest')
     cfg.env.HAS_GTEST = True
 
-def build(bld):
-    bld.stlib(
-        source='modules/gtest/src/gtest-all.cc',
+@conf
+def libgtest(bld, **kw):
+    kw['cxxflags'] = Utils.to_list(kw.get('cxxflags', [])) + ['-Wno-undef']
+    kw.update(
+        source='modules/gtest/googletest/src/gtest-all.cc',
         target='gtest/gtest',
-        includes='modules/gtest/ modules/gtest/include',
-        export_includes='modules/gtest/include',
+        includes='modules/gtest/googletest modules/gtest/googletest/include',
+        export_includes='modules/gtest/googletest/include',
         name='GTEST',
     )
+    return bld.stlib(**kw)

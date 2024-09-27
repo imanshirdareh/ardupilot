@@ -1,4 +1,3 @@
-/// -*- tab-width: 4; Mode: C++; c-basic-offset: 4; indent-tabs-mode: nil -*-
 /*
    This program is free software: you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -30,14 +29,14 @@ const extern AP_HAL::HAL& hal;
 
 AccelCalibrator::AccelCalibrator() :
 _conf_tolerance(ACCEL_CAL_TOLERANCE),
-_sample_buffer(NULL)
+_sample_buffer(nullptr)
 {
     clear();
 }
 /*
     Select options, initialise variables and initiate accel calibration
     Options:
-    Fit Type:       Will assume that if accelerometer static samples around all possible orientatio
+    Fit Type:       Will assume that if accelerometer static samples around all possible orientation
                     are spread in space will cover a surface of AXIS_ALIGNED_ELLIPSOID or any general 
                     ELLIPSOID as chosen
 
@@ -69,7 +68,7 @@ void AccelCalibrator::start(enum accel_cal_fit_type_t fit_type, uint8_t num_samp
     _conf_fit_type = fit_type;
 
     const uint16_t faces = 2*_conf_num_samples-4;
-    const float a = (4.0f * M_PI_F / (3.0f * faces)) + M_PI_F / 3.0f;
+    const float a = (4.0f * M_PI / (3.0f * faces)) + M_PI / 3.0f;
     const float theta = 0.5f * acosf(cosf(a) / (1.0f - cosf(a)));
     _min_sample_dist = GRAVITY_MSS * 2*sinf(theta/2);
 
@@ -174,7 +173,7 @@ bool AccelCalibrator::get_sample(uint8_t i, Vector3f& s) const {
     return true;
 }
 
-// returns truen and sample corrected with diag offdiag parameters as calculated by LSq estimation procedure
+// returns true and sample corrected with diag offdiag parameters as calculated by LSq estimation procedure
 // returns false if no correct parameter exists to be applied along with existing sample without corrections
 bool AccelCalibrator::get_sample_corrected(uint8_t i, Vector3f& s) const {
     if (_status != ACCEL_CAL_SUCCESS || !get_sample(i,s)) {
@@ -192,7 +191,7 @@ bool AccelCalibrator::get_sample_corrected(uint8_t i, Vector3f& s) const {
     return true;
 }
 
-// checks if no new sample has been recieved for considerable amount of time
+// checks if no new sample has been received for considerable amount of time
 void AccelCalibrator::check_for_timeout() {
     const uint32_t timeout = _conf_sample_time*2*1000 + 500;
     if (_status == ACCEL_CAL_COLLECTING_SAMPLE && AP_HAL::millis() - _last_samp_frag_collected_ms > timeout) {
@@ -200,7 +199,7 @@ void AccelCalibrator::check_for_timeout() {
     }
 }
 
-// returns spherical fit paramteters
+// returns spherical fit parameters
 void AccelCalibrator::get_calibration(Vector3f& offset) const {
     offset = -_param.s.offset;
 }
@@ -240,7 +239,7 @@ void AccelCalibrator::get_calibration(Vector3f& offset, Vector3f& diag, Vector3f
  */
 bool AccelCalibrator::accept_sample(const Vector3f& sample)
 {
-    if (_sample_buffer == NULL) {
+    if (_sample_buffer == nullptr) {
         return false;
     }
 
@@ -263,9 +262,9 @@ void AccelCalibrator::set_status(enum accel_cal_status_t status) {
             _status = ACCEL_CAL_NOT_STARTED;
 
             _samples_collected = 0;
-            if (_sample_buffer != NULL) {
+            if (_sample_buffer != nullptr) {
                 free(_sample_buffer);
-                _sample_buffer = NULL;
+                _sample_buffer = nullptr;
             }
 
             break;
@@ -274,9 +273,9 @@ void AccelCalibrator::set_status(enum accel_cal_status_t status) {
             //Callibrator has been started and is waiting for user to ack after orientation setting
             if (!running()) {
                 _samples_collected = 0;
-                if (_sample_buffer == NULL) {
+                if (_sample_buffer == nullptr) {
                     _sample_buffer = (struct AccelSample*)calloc(_conf_num_samples,sizeof(struct AccelSample));
-                    if (_sample_buffer == NULL) {
+                    if (_sample_buffer == nullptr) {
                         set_status(ACCEL_CAL_FAILED);
                         break;
                     }
@@ -289,7 +288,7 @@ void AccelCalibrator::set_status(enum accel_cal_status_t status) {
             break;
 
         case ACCEL_CAL_COLLECTING_SAMPLE:
-            // Calibrator is waiting on collecting samples from acceleromter for amount of 
+            // Calibrator is waiting on collecting samples from accelerometer for amount of 
             // time as requested by user/GCS
             if (_status != ACCEL_CAL_WAITING_FOR_ORIENTATION) {
                 break;
@@ -310,7 +309,7 @@ void AccelCalibrator::set_status(enum accel_cal_status_t status) {
 
         case ACCEL_CAL_FAILED:
             // Calibration has failed with reasons that can range from 
-            // bad sample data leading to faillure in tolerance test to lack of distinct samples
+            // bad sample data leading to failure in tolerance test to lack of distinct samples
             if (_status == ACCEL_CAL_NOT_STARTED) {
                 break;
             }
@@ -326,7 +325,7 @@ void AccelCalibrator::set_status(enum accel_cal_status_t status) {
 */
 void AccelCalibrator::run_fit(uint8_t max_iterations, float& fitness)
 {
-    if (_sample_buffer == NULL) {
+    if (_sample_buffer == nullptr) {
         return;
     }
     fitness = calc_mean_squared_residuals(_param.s);
@@ -335,8 +334,6 @@ void AccelCalibrator::run_fit(uint8_t max_iterations, float& fitness)
     uint8_t num_iterations = 0;
 
     while(num_iterations < max_iterations) {
-        float last_fitness = fitness;
-
         float JTJ[ACCEL_CAL_MAX_NUM_PARAMS*ACCEL_CAL_MAX_NUM_PARAMS] {};
         VectorP JTFI;
 
@@ -358,7 +355,7 @@ void AccelCalibrator::run_fit(uint8_t max_iterations, float& fitness)
             }
         }
 
-        if (!inverse(JTJ, JTJ, get_num_params())) {
+        if (!mat_inverse(JTJ, JTJ, get_num_params())) {
             return;
         }
 
@@ -380,9 +377,6 @@ void AccelCalibrator::run_fit(uint8_t max_iterations, float& fitness)
         }
 
         num_iterations++;
-        if (fitness - last_fitness < 1.0e-9f) {
-            break;
-        }
     }
 }
 
@@ -398,17 +392,10 @@ float AccelCalibrator::calc_residual(const Vector3f& sample, const struct param_
 }
 
 // calculated the total mean squared fitness of all the collected samples using parameters
-// converged to LSq estimator so far
-float AccelCalibrator::calc_mean_squared_residuals() const
-{
-    return calc_mean_squared_residuals(_param.s);
-}
-
-// calculated the total mean squared fitness of all the collected samples using parameters
 // supplied
 float AccelCalibrator::calc_mean_squared_residuals(const struct param_t& params) const
 {
-    if (_sample_buffer == NULL || _samples_collected == 0) {
+    if (_sample_buffer == nullptr || _samples_collected == 0) {
         return 1.0e30f;
     }
     float sum = 0.0f;
@@ -456,10 +443,10 @@ void AccelCalibrator::calc_jacob(const Vector3f& sample, const struct param_t& p
             ret[8] = -1.0f * (((sample.z + offset.z) * B) + ((sample.y + offset.y) * C))/length;
             return;
         }
-    };
+    }
 }
 
-// returns number of paramters are required for selected Fit type
+// returns number of parameters are required for selected Fit type
 uint8_t AccelCalibrator::get_num_params() const {
     switch (_conf_fit_type) {
         case ACCEL_CAL_AXIS_ALIGNED_ELLIPSOID:

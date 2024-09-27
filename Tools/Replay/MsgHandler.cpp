@@ -1,21 +1,5 @@
 #include "MsgHandler.h"
 
-void fatal(const char *msg) {
-    ::printf("%s",msg);
-    ::printf("\n");
-    exit(1);
-}
-
-char *xstrdup(const char *string)
-{
-    char *ret = strdup(string);
-    if (ret == NULL) {
-        perror("strdup");
-        fatal("strdup failed");
-    }
-    return ret;
-}
-
 void MsgHandler::add_field_type(char type, size_t size)
 {
     size_for_type_table[(type > 'A' ? (type-'A') : (type-'a'))] = size;
@@ -23,13 +7,19 @@ void MsgHandler::add_field_type(char type, size_t size)
 
 uint8_t MsgHandler::size_for_type(char type)
 {
-    return size_for_type_table[(uint8_t)(type > 'A' ? (type-'A') : (type-'a'))];
+    uint8_t ret = size_for_type_table[(uint8_t)(type > 'A' ? (type-'A') : (type-'a'))];
+    if (ret == 0) {
+        ::printf("Unknown type (%c)\n", type);
+        abort();
+    }
+    return ret;
 }
 
 void MsgHandler::init_field_types()
 {
     add_field_type('b', sizeof(int8_t));
     add_field_type('c', sizeof(int16_t));
+    add_field_type('d', sizeof(double));
     add_field_type('e', sizeof(int32_t));
     add_field_type('f', sizeof(float));
     add_field_type('h', sizeof(int16_t));
@@ -55,7 +45,7 @@ struct MsgHandler::format_field_info *MsgHandler::find_field_info(const char *la
             return &field_info[i];
         }
     }
-    return NULL;
+    return nullptr;
 }
 
 MsgHandler::MsgHandler(const struct log_Format &_f) : next_field(0), f(_f)
@@ -67,29 +57,37 @@ MsgHandler::MsgHandler(const struct log_Format &_f) : next_field(0), f(_f)
 void MsgHandler::add_field(const char *_label, uint8_t _type, uint8_t _offset,
                           uint8_t _length)
 {
-    field_info[next_field].label = xstrdup(_label);
+    field_info[next_field].label = strdup(_label);
     field_info[next_field].type = _type;
     field_info[next_field].offset = _offset;
     field_info[next_field].length = _length;
     next_field++;
 }
 
+static char *get_string_field(char *field, uint8_t fieldlen)
+{
+    char *ret = (char *)malloc(fieldlen+1);
+    memcpy(ret, field, fieldlen);
+    return ret;
+}
+
 void MsgHandler::parse_format_fields()
 {
-    char *labels = xstrdup(f.labels);
+    char *labels = get_string_field(f.labels, sizeof(f.labels));
     char * arg = labels;
     uint8_t label_offset = 0;
     char *next_label;
     uint8_t msg_offset = 3; // 3 bytes for the header
 
+    char *format = get_string_field(f.format, ARRAY_SIZE(f.format));
+
     while ((next_label = strtok(arg, ",")) != NULL) {
-	if (label_offset > strlen(f.format)) {
-	    free(labels);
-	    printf("too few field times for labels %s (format=%s) (labels=%s)\n",
-		   f.name, f.format, f.labels);
-	    exit(1);
-	}
-        uint8_t field_type = f.format[label_offset];
+        if (label_offset > strlen(format)) {
+            printf("too few field times for labels %s (format=%s) (labels=%s)\n",
+                   f.name, format, labels);
+            exit(1);
+        }
+        uint8_t field_type = format[label_offset];
         uint8_t length = size_for_type(field_type);
         add_field(next_label, field_type, msg_offset, length);
         arg = NULL;
@@ -97,18 +95,19 @@ void MsgHandler::parse_format_fields()
         label_offset++;
     }
 
-    if (label_offset != strlen(f.format)) {
+    if (label_offset != strlen(format)) {
         printf("too few labels for format (format=%s) (labels=%s)\n",
-               f.format, f.labels);
+               format, labels);
     }
 
     free(labels);
+    free(format);
 }
 
 bool MsgHandler::field_value(uint8_t *msg, const char *label, char *ret, uint8_t retlen)
 {
     struct format_field_info *info = find_field_info(label);
-    if (info == NULL) {
+    if (info == nullptr) {
       ::printf("No info for (%s)\n",label);
       exit(1);
     }
@@ -129,8 +128,7 @@ bool MsgHandler::field_value(uint8_t *msg, const char *label, char *ret, uint8_t
 bool MsgHandler::field_value(uint8_t *msg, const char *label, Vector3f &ret)
 {
     const char *axes = "XYZ";
-    uint8_t i;
-    for(i=0; i<next_field; i++) {
+    for(uint8_t i=0; i<next_field; i++) {
 	if (!strncmp(field_info[i].label, label, strlen(label)) &&
 	    strlen(field_info[i].label) == strlen(label)+1) {
 	    for (uint8_t j=0; j<3; j++) {
@@ -144,7 +142,7 @@ bool MsgHandler::field_value(uint8_t *msg, const char *label, Vector3f &ret)
             }
         }
         if (i == next_field) {
-            return 0; // not found
+            return false; // not found
         }
     }
 
@@ -152,7 +150,7 @@ bool MsgHandler::field_value(uint8_t *msg, const char *label, Vector3f &ret)
 }
 
 
-void MsgHandler::string_for_labels(char *buffer, uint bufferlen)
+void MsgHandler::string_for_labels(char *buffer, uint32_t bufferlen)
 {
     memset(buffer, '\0', bufferlen);
     bufferlen--;
@@ -180,15 +178,6 @@ void MsgHandler::string_for_labels(char *buffer, uint bufferlen)
     }
 }
 
-MsgHandler::~MsgHandler()
-{
-    for (uint8_t k=0; k<LOGREADER_MAX_FIELDS; k++) {
-        if (field_info[k].label != NULL) {
-            free(field_info[k].label);
-        }
-    }
-}
-
 void MsgHandler::location_from_msg(uint8_t *msg,
                                   Location &loc,
                                   const char *label_lat,
@@ -197,8 +186,7 @@ void MsgHandler::location_from_msg(uint8_t *msg,
 {
     loc.lat = require_field_int32_t(msg, label_lat);
     loc.lng = require_field_int32_t(msg, label_long);
-    loc.alt = require_field_int32_t(msg, label_alt);
-    loc.options = 0;
+    loc.set_alt_cm(require_field_int32_t(msg, label_alt), Location::AltFrame::ABSOLUTE);
 }
 
 void MsgHandler::ground_vel_from_msg(uint8_t *msg,
@@ -207,12 +195,22 @@ void MsgHandler::ground_vel_from_msg(uint8_t *msg,
                                     const char *label_course,
                                     const char *label_vz)
 {
-    uint32_t ground_speed;
-    int32_t ground_course;
-    require_field(msg, label_speed, ground_speed);
+    float ground_speed;
+    float ground_course;
+    // in older logs speed and course are integers
+    if (!field_value(msg, label_speed, ground_speed)) {
+        uint32_t speed_cms;
+        require_field(msg, label_speed, speed_cms);
+        ground_speed = speed_cms * 0.01f;
+    }
+    if (!field_value(msg, label_course, ground_course)) {
+        uint32_t course_cd;
+        require_field(msg, label_course, course_cd);
+        ground_course = course_cd * 0.01f;
+    }
     require_field(msg, label_course, ground_course);
-    vel[0] = ground_speed*0.01f*cosf(radians(ground_course*0.01f));
-    vel[1] = ground_speed*0.01f*sinf(radians(ground_course*0.01f));
+    vel[0] = ground_speed*cosf(radians(ground_course));
+    vel[1] = ground_speed*sinf(radians(ground_course));
     vel[2] = require_field_float(msg, label_vz);
 }
 
@@ -231,7 +229,7 @@ void MsgHandler::field_not_found(uint8_t *msg, const char *label)
 {
     char all_labels[256];
     uint8_t type = msg[2];
-    string_for_labels(all_labels, 256);
+    string_for_labels(all_labels, ARRAY_SIZE(all_labels));
     ::printf("Field (%s) not found for id=%d; options are (%s)\n",
              label, type, all_labels);
     abort();

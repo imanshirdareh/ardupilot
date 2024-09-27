@@ -1,30 +1,22 @@
-/// -*- tab-width: 4; Mode: C++; c-basic-offset: 4; indent-tabs-mode: nil -*-
-
 //
 // functions to support precision landing
 //
 
 #include "Copter.h"
 
-#if PRECISION_LANDING == ENABLED
+#if AC_PRECLAND_ENABLED
 
 void Copter::init_precland()
 {
-    copter.precland.init();
+    // scheduler table specifies 400Hz, but we can call it no faster
+    // than the scheduler loop rate:
+    copter.precland.init(MIN(400, scheduler.get_loop_rate_hz()));
 }
 
 void Copter::update_precland()
 {
-    float final_alt = current_loc.alt;
-
-    // use range finder altitude if it is valid
-    if (sonar_enabled && (sonar_alt_health >= SONAR_ALT_HEALTH_MAX)) {
-        final_alt = sonar_alt;
-    }
-
-    copter.precland.update(final_alt);
-
-    // log output
-    Log_Write_Precland();
+    // alt will be unused if we pass false through as the second parameter:
+    return precland.update(rangefinder_state.alt_cm_glitch_protected,
+                           rangefinder_alt_ok());
 }
 #endif

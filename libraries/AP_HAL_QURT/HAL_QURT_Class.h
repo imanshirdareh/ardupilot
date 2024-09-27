@@ -12,19 +12,18 @@
    You should have received a copy of the GNU General Public License
    along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
-
-#ifndef __AP_HAL_QURT_CLASS_H__
-#define __AP_HAL_QURT_CLASS_H__
+#pragma once
 
 #include <AP_HAL/AP_HAL.h>
 
 #include "AP_HAL_QURT_Namespace.h"
+#include "interface.h"
 
-class HAL_QURT : public AP_HAL::HAL {
+class HAL_QURT : public AP_HAL::HAL
+{
 public:
     HAL_QURT();
     void run(int argc, char* const* argv, Callbacks* callbacks) const override;
+    void start_main_thread(Callbacks* callbacks);
+    void main_thread(void);
 };
-
-#endif // __AP_HAL_QURT_CLASS_H__
-

@@ -1,57 +1,48 @@
-// -*- tab-width: 4; Mode: C++; c-basic-offset: 4; indent-tabs-mode: nil -*-
-
 /*
   MAVLink enabled mount backend class
  */
+#pragma once
 
-#ifndef __AP_MOUNT_SOLOGIMBAL_H__
-#define __AP_MOUNT_SOLOGIMBAL_H__
+#include "AP_Mount_config.h"
 
+#if HAL_SOLO_GIMBAL_ENABLED
 
-#include <AP_HAL/AP_HAL.h>
-#include <AP_AHRS/AP_AHRS.h>
-
-#if AP_AHRS_NAVEKF_AVAILABLE
+#include "AP_Mount_Backend.h"
 #include <AP_Math/AP_Math.h>
 #include <AP_Common/AP_Common.h>
-#include <AP_GPS/AP_GPS.h>
 #include <GCS_MAVLink/GCS_MAVLink.h>
-#include <RC_Channel/RC_Channel.h>
-#include "AP_Mount_Backend.h"
 #include "SoloGimbal.h"
-
 
 class AP_Mount_SoloGimbal : public AP_Mount_Backend
 {
 
 public:
     // Constructor
-    AP_Mount_SoloGimbal(AP_Mount &frontend, AP_Mount::mount_state &state, uint8_t instance);
+    AP_Mount_SoloGimbal(AP_Mount &frontend, AP_Mount_Params &params, uint8_t instance);
 
     // init - performs any required initialisation for this instance
-    virtual void init(const AP_SerialManager& serial_manager);
+    void init() override;
 
     // update mount position - should be called periodically
-    virtual void update();
+    void update() override;
 
-    // has_pan_control - returns true if this mount can control it's pan (required for multicopters)
-    virtual bool has_pan_control() const;
-
-    // set_mode - sets mount's mode
-    virtual void set_mode(enum MAV_MOUNT_MODE mode);
-
-    // status_msg - called to allow mounts to send their status to GCS using the MOUNT_STATUS message
-    virtual void status_msg(mavlink_channel_t chan);
+    // has_pan_control - returns true if this mount can control its pan (required for multicopters)
+    bool has_pan_control() const override { return false; }
 
     // handle a GIMBAL_REPORT message
-    virtual void handle_gimbal_report(mavlink_channel_t chan, mavlink_message_t *msg);
-    virtual void handle_gimbal_torque_report(mavlink_channel_t chan, mavlink_message_t *msg);
-    virtual void handle_param_value(mavlink_message_t *msg);
+    void handle_gimbal_report(mavlink_channel_t chan, const mavlink_message_t &msg) override;
+    void handle_gimbal_torque_report(mavlink_channel_t chan, const mavlink_message_t &msg);
+    void handle_param_value(const mavlink_message_t &msg) override;
 
-    // send a GIMBAL_REPORT message to the GCS
-    virtual void send_gimbal_report(mavlink_channel_t chan);
+    void update_fast() override;
 
-    virtual void update_fast();
+protected:
+
+    // returns true if heart beat should be suppressed for this gimbal
+    bool suppress_heartbeat() const override { return true; }
+
+    // get attitude as a quaternion.  returns true on success
+    bool get_attitude_quaternion(Quaternion& att_quat) override;
 
 private:
     // internal variables
@@ -61,10 +52,7 @@ private:
     void Log_Write_Gimbal(SoloGimbal &gimbal);
 
     bool _params_saved;
-
     SoloGimbal _gimbal;
 };
 
-#endif // AP_AHRS_NAVEKF_AVAILABLE
-
-#endif // __AP_MOUNT_SOLOGIMBAL_H__
+#endif // HAL_SOLO_GIMBAL_ENABLED

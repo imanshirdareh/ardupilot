@@ -37,12 +37,10 @@
  *
  ****************************************************************************/
 #include <AP_HAL/AP_HAL.h>
-#if CONFIG_HAL_BOARD_SUBTYPE == HAL_BOARD_SUBTYPE_LINUX_BEBOP ||\
-    CONFIG_HAL_BOARD_SUBTYPE == HAL_BOARD_SUBTYPE_LINUX_MINLURE
+#if CONFIG_HAL_BOARD_SUBTYPE == HAL_BOARD_SUBTYPE_LINUX_BEBOP
 #include "Flow_PX4.h"
 
-#include <math.h>
-#include <stdbool.h>
+#include <cmath>
 #include <stdio.h>
 #include <stdlib.h>
 
@@ -74,7 +72,7 @@ Flow_PX4::Flow_PX4(uint32_t width, uint32_t bytesperline,
      * So _num_blocks = _width / (2 * _search_size + 3)
      */
     _num_blocks = _width / (2 * _search_size + 3);
-    _pixstep = ceil(((float)(_pixhi - _pixlo)) / _num_blocks);
+    _pixstep = ceilf(((float)(_pixhi - _pixlo)) / _num_blocks);
 }
 
 /**
@@ -280,7 +278,7 @@ uint8_t Flow_PX4::compute_flow(uint8_t *image1, uint8_t *image2,
                 }
             }
 
-            /* acceptance SAD distance threshhold */
+            /* acceptance SAD distance threshold */
             if (dist < _bottom_flow_value_threshold) {
                 meanflowx += (float)sumx;
                 meanflowy += (float) sumy;

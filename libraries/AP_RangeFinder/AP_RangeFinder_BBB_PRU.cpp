@@ -16,10 +16,9 @@
    by Mirko Denecke <mirkix@gmail.com>
  */
 
-#include <AP_HAL/AP_HAL.h>
-#if CONFIG_HAL_BOARD_SUBTYPE == HAL_BOARD_SUBTYPE_LINUX_BBBMINI
-
 #include "AP_RangeFinder_BBB_PRU.h"
+
+#if AP_RANGEFINDER_BBB_PRU_ENABLED
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -35,27 +34,18 @@ extern const AP_HAL::HAL& hal;
 volatile struct range *rangerpru;
 
 /*
-   The constructor also initialises the rangefinder. Note that this
-   constructor is not called until detect() returns true, so we
-   already know that we should setup the rangefinder
-*/
-AP_RangeFinder_BBB_PRU::AP_RangeFinder_BBB_PRU(RangeFinder &_ranger, uint8_t instance, RangeFinder::RangeFinder_State &_state) :
-    AP_RangeFinder_Backend(_ranger, instance, _state)
-{
-}
-
-/*
    Stop PRU, load firmware (check if firmware is present), start PRU.
    If we get a result the sensor seems to be there.
 */
-bool AP_RangeFinder_BBB_PRU::detect(RangeFinder &_ranger, uint8_t instance)
+bool AP_RangeFinder_BBB_PRU::detect()
 {
+    //The constructor is called when the detect() method returns true, more on this in the header file
     bool result = true;
     uint32_t mem_fd;
     uint32_t *ctrl;
     void *ram;
 
-    mem_fd = open("/dev/mem", O_RDWR | O_SYNC);
+    mem_fd = open("/dev/mem", O_RDWR | O_SYNC | O_CLOEXEC);
     ctrl = (uint32_t*)mmap(0, 0x1000, PROT_READ | PROT_WRITE, MAP_SHARED, mem_fd, PRU0_CTRL_BASE);
     ram = mmap(0, PRU0_IRAM_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, mem_fd, PRU0_IRAM_BASE);
 
@@ -65,13 +55,11 @@ bool AP_RangeFinder_BBB_PRU::detect(RangeFinder &_ranger, uint8_t instance)
 
     // Load firmware (.text)
     FILE *file = fopen("/lib/firmware/rangefinderprutext.bin", "rb");
-    if(file == NULL)
-    {
+    if (file == nullptr) {
         result = false;
     }
 
-    if(fread(ram, PRU0_IRAM_SIZE, 1, file) != 1)
-    {
+    if (fread(ram, PRU0_IRAM_SIZE, 1, file) != 1) {
         result = false;
     }
 
@@ -83,13 +71,11 @@ bool AP_RangeFinder_BBB_PRU::detect(RangeFinder &_ranger, uint8_t instance)
 
     // Load firmware (.data)
     file = fopen("/lib/firmware/rangefinderprudata.bin", "rb");
-    if(file == NULL)
-    {
+    if (file == nullptr) {
         result = false;
     }
 
-    if(fread(ram, PRU0_DRAM_SIZE, 1, file) != 1)
-    {
+    if (fread(ram, PRU0_DRAM_SIZE, 1, file) != 1) {
         result = false;
     }
 
@@ -114,7 +100,8 @@ bool AP_RangeFinder_BBB_PRU::detect(RangeFinder &_ranger, uint8_t instance)
 */
 void AP_RangeFinder_BBB_PRU::update(void)
 {
-    state.status = (RangeFinder::RangeFinder_Status)rangerpru->status;
-    state.distance_cm = rangerpru->distance;
+    state.status = (RangeFinder::Status)rangerpru->status;
+    state.distance_m = rangerpru->distance * 0.01f;
+    state.last_reading_ms = AP_HAL::millis();
 }
-#endif // CONFIG_HAL_BOARD_SUBTYPE
+#endif // AP_RANGEFINDER_BBB_PRU_ENABLED

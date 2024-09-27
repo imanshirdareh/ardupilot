@@ -12,12 +12,6 @@ void GPIO::init()
 void GPIO::pinMode(uint8_t pin, uint8_t output)
 {}
 
-int8_t GPIO::analogPinToDigitalPin(uint8_t pin)
-{
-	return -1;
-}
-
-
 uint8_t GPIO::read(uint8_t pin) {
     return 0;
 }
@@ -30,13 +24,7 @@ void GPIO::toggle(uint8_t pin)
 
 /* Alternative interface: */
 AP_HAL::DigitalSource* GPIO::channel(uint16_t n) {
-    return new DigitalSource(0);
-}
-
-/* Interrupt interface: */
-bool GPIO::attach_interrupt(uint8_t interrupt_num, AP_HAL::Proc p,
-        uint8_t mode) {
-    return true;
+    return NEW_NOTHROW DigitalSource(0);
 }
 
 bool GPIO::usb_connected(void)

@@ -3,15 +3,14 @@
  */
 
 #include <AP_HAL/AP_HAL.h>
-#include <RC_Channel/RC_Channel.h>
-#include <GCS_MAVLink/include/mavlink/v1.0/checksum.h>
+#include <GCS_MAVLink/include/mavlink/v2.0/checksum.h>
 
 const AP_HAL::HAL& hal = AP_HAL::get_HAL();
 
 #define NUM_CHANNELS 4
 #define ESC_MAGIC 0xF7
 #define RC_SPEED 490
-#define UART uartE
+#define UART serial(4)
 
 class RC_UART : public AP_HAL::HAL::Callbacks {
 public:
@@ -24,18 +23,12 @@ private:
     uint8_t enable_mask;
     const uint32_t baudrate = 115200;
     uint32_t counter;
-
-    RC_Channel rc_1{0};
-    RC_Channel rc_2{1};
-    RC_Channel rc_3{2};
-    RC_Channel rc_4{3};
-    RC_Channel *rc = &rc_1;
 };
 
 void RC_UART::setup()
 {
     hal.scheduler->delay(1000);
-    hal.console->println("RC_UART starting");
+    hal.console->printf("RC_UART starting\n");
     hal.UART->begin(baudrate, 512, 512);
     hal.rcout->set_freq(0xFF, RC_SPEED);
 }
@@ -94,11 +87,10 @@ void RC_UART::loop()
             if (enable_mask == 0) {
                 hal.rcout->force_safety_off();
             }
-            rc[i].enable_out();
+            hal.rcout->enable_ch(i);
             enable_mask |= 1U<<i;
         }
-        rc[i].radio_out = u.period[i];
-        rc[i].output();
+        hal.rcout->write(i, u.period[i]);
     }
 
     // report periods to console for debug
@@ -118,7 +110,9 @@ void RC_UART::loop()
             uint16_t rcin[8];
             uint16_t crc;
         } rcin;
-        if (hal.rcin->new_input() && hal.rcin->read(rcin.rcin, 8) == 8) {
+        uint16_t rcval[8];
+        if (hal.rcin->new_input() && hal.rcin->read(rcval, 8) == 8) {
+            memcpy(rcin.rcin, rcval, sizeof(rcval));
             rcin.crc = crc_calculate((uint8_t*)&rcin.rcin[0], 16);
             hal.UART->write((uint8_t*)&rcin, sizeof(rcin));
         }

@@ -15,34 +15,40 @@
 #define APM_IO_PRIORITY          58
 
 /* Scheduler implementation: */
-class QURT::Scheduler : public AP_HAL::Scheduler {
+class QURT::Scheduler : public AP_HAL::Scheduler
+{
 public:
     Scheduler();
     /* AP_HAL::Scheduler methods */
 
-    void     init();
-    void     delay(uint16_t ms);
-    void     delay_microseconds(uint16_t us);
-    void     register_delay_callback(AP_HAL::Proc, uint16_t min_time_ms);
-    void     register_timer_process(AP_HAL::MemberProc);
-    void     register_io_process(AP_HAL::MemberProc);
-    void     register_timer_failsafe(AP_HAL::Proc, uint32_t period_us);
+    void     init() override;
+    void     delay(uint16_t ms) override;
+    void     delay_microseconds(uint16_t us) override;
+    void     register_timer_process(AP_HAL::MemberProc) override;
+    void     register_io_process(AP_HAL::MemberProc) override;
+    void     register_timer_failsafe(AP_HAL::Proc, uint32_t period_us) override;
     void     suspend_timer_procs();
     void     resume_timer_procs();
-    void     reboot(bool hold_in_bootloader);
+    void     reboot(bool hold_in_bootloader) override;
 
-    bool     in_timerprocess();
-    bool     system_initializing();
-    void     system_initialized();
+    bool     in_main_thread() const override;
     void     hal_initialized();
-    
+
+    void     set_system_initialized() override;
+    bool     is_system_initialized() override
+    {
+        return _initialized;
+    }
+
+    bool thread_create(AP_HAL::MemberProc proc, const char *name,
+                       uint32_t stack_size, priority_base base, int8_t priority) override;
+
 private:
     bool _initialized;
     volatile bool _hal_initialized;
     AP_HAL::Proc _delay_cb;
     uint16_t _min_delay_cb_ms;
     AP_HAL::Proc _failsafe;
-    volatile bool _timer_pending;
 
     volatile bool _timer_suspended;
 
@@ -56,11 +62,13 @@ private:
 
     volatile bool _timer_event_missed;
 
-    pid_t _main_task_pid;
+    pthread_t _main_thread_ctx;
     pthread_t _timer_thread_ctx;
     pthread_t _io_thread_ctx;
     pthread_t _storage_thread_ctx;
     pthread_t _uart_thread_ctx;
+
+    uint8_t calculate_thread_priority(priority_base base, int8_t priority) const;
 
     static void *_timer_thread(void *arg);
     static void *_io_thread(void *arg);

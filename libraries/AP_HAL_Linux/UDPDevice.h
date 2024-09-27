@@ -1,12 +1,11 @@
-#ifndef __AP_HAL_LINUX_UDPDEVICE_UDP_H__
-#define __AP_HAL_LINUX_UDPDEVICE_UDP_H__
+#pragma once
 
+#include <AP_HAL/utility/Socket_native.h>
 #include "SerialDevice.h"
-#include <AP_HAL/utility/Socket.h>
 
 class UDPDevice: public SerialDevice {
 public:
-    UDPDevice(const char *ip, uint16_t port, bool bcast);
+    UDPDevice(const char *ip, uint16_t port, bool bcast, bool input);
     virtual ~UDPDevice();
 
     virtual bool open() override;
@@ -16,11 +15,10 @@ public:
     virtual ssize_t write(const uint8_t *buf, uint16_t n) override;
     virtual ssize_t read(uint8_t *buf, uint16_t n) override;
 private:
-    SocketAPM socket{true};
+    SocketAPM_native socket{true};
     const char *_ip;
     uint16_t _port;
     bool _bcast;
+    bool _input;
     bool _connected = false;
 };
-
-#endif

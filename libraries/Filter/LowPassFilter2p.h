@@ -1,5 +1,3 @@
-// -*- tab-width: 4; Mode: C++; c-basic-offset: 4; indent-tabs-mode: nil -*-
-
 /*
    This program is free software: you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -14,12 +12,10 @@
    You should have received a copy of the GNU General Public License
    along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
-
-#ifndef LOWPASSFILTER2P_H
-#define LOWPASSFILTER2P_H
+#pragma once
 
 #include <AP_Math/AP_Math.h>
-#include <math.h>
+#include <cmath>
 #include <inttypes.h>
 
 
@@ -38,16 +34,20 @@ public:
         float b1;
         float b2;
     };
-  
+
+    CLASS_NO_COPY(DigitalBiquadFilter);
+
     DigitalBiquadFilter();
 
     T apply(const T &sample, const struct biquad_params &params);
     void reset();
+    void reset(const T &value, const struct biquad_params &params);
     static void compute_params(float sample_freq, float cutoff_freq, biquad_params &ret);
     
 private:
     T _delay_element_1;
     T _delay_element_2;
+    bool initialised;
 };
 
 template <class T>
@@ -63,6 +63,9 @@ public:
     float get_sample_freq(void) const;
     T apply(const T &sample);
     void reset(void);
+    void reset(const T &value);
+
+    CLASS_NO_COPY(LowPassFilter2p);
 
 protected:
     struct DigitalBiquadFilter<T>::biquad_params _params;
@@ -91,6 +94,3 @@ typedef LowPassFilter2p<long>     LowPassFilter2pLong;
 typedef LowPassFilter2p<float>    LowPassFilter2pFloat;
 typedef LowPassFilter2p<Vector2f> LowPassFilter2pVector2f;
 typedef LowPassFilter2p<Vector3f> LowPassFilter2pVector3f;
-
-
-#endif // LOWPASSFILTER2P_H

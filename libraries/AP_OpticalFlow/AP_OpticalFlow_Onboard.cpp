@@ -12,31 +12,26 @@
    You should have received a copy of the GNU General Public License
    along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
+
+#include "AP_OpticalFlow_config.h"
+
+#if AP_OPTICALFLOW_ONBOARD_ENABLED
+
 #include "AP_OpticalFlow_Onboard.h"
 
 #include <AP_HAL/AP_HAL.h>
 
-#include "OpticalFlow.h"
+#ifndef OPTICALFLOW_ONBOARD_DEBUG
+#define OPTICALFLOW_ONBOARD_DEBUG 0
+#endif
 
-#if CONFIG_HAL_BOARD == HAL_BOARD_LINUX &&\
-    (CONFIG_HAL_BOARD_SUBTYPE == HAL_BOARD_SUBTYPE_LINUX_BEBOP ||\
-     CONFIG_HAL_BOARD_SUBTYPE == HAL_BOARD_SUBTYPE_LINUX_MINLURE)
-//#define FLOWONBOARD_DEBUG 1
 #define OPTICALFLOW_ONBOARD_ID 1
 extern const AP_HAL::HAL& hal;
-
-AP_OpticalFlow_Onboard::AP_OpticalFlow_Onboard(OpticalFlow &_frontend,
-                                               AP_AHRS_NavEKF& ahrs) :
-    OpticalFlow_backend(_frontend),
-    _ahrs(ahrs)
-{}
 
 void AP_OpticalFlow_Onboard::init(void)
 {
     /* register callback to get gyro data */
-    hal.opticalflow->init(
-            FUNCTOR_BIND_MEMBER(&AP_OpticalFlow_Onboard::_get_gyro,
-                                void, float&, float&, float&));
+    hal.opticalflow->init();
 }
 
 void AP_OpticalFlow_Onboard::update()
@@ -53,14 +48,15 @@ void AP_OpticalFlow_Onboard::update()
         return;
     }
 
-    struct OpticalFlow::OpticalFlow_state state;
-    state.device_id = OPTICALFLOW_ONBOARD_ID;
+    struct AP_OpticalFlow::OpticalFlow_state state;
     state.surface_quality = data_frame.quality;
     if (data_frame.delta_time > 0) {
         const Vector2f flowScaler = _flowScaler();
         float flowScaleFactorX = 1.0f + 0.001f * flowScaler.x;
         float flowScaleFactorY = 1.0f + 0.001f * flowScaler.y;
 
+        // delta_time is in microseconds and flow is in milliradians
+        // per second, so multiply by 1000
         state.flowRate.x = flowScaleFactorX * 1000.0f /
                            float(data_frame.delta_time) *
                            data_frame.pixel_flow_x_integral;
@@ -69,11 +65,14 @@ void AP_OpticalFlow_Onboard::update()
                            float(data_frame.delta_time) *
                            data_frame.pixel_flow_y_integral;
 
-        state.bodyRate.x = 1.0f / float(data_frame.delta_time) *
+        // delta_time is in microseconds so multiply to get back to seconds
+        state.bodyRate.x = 1000000.0f / float(data_frame.delta_time) *
                            data_frame.gyro_x_integral;
 
-        state.bodyRate.y = 1.0f / float(data_frame.delta_time) *
+        state.bodyRate.y = 1000000.0f / float(data_frame.delta_time) *
                            data_frame.gyro_y_integral;
+
+        _applyYaw(state.flowRate);
     } else {
         state.flowRate.zero();
         state.bodyRate.zero();
@@ -82,7 +81,7 @@ void AP_OpticalFlow_Onboard::update()
     // copy results to front end
     _update_frontend(state);
 
-#if FLOWONBOARD_DEBUG
+#if OPTICALFLOW_ONBOARD_DEBUG
     hal.console->printf("FLOW_ONBOARD qual:%u FlowRateX:%4.2f Y:%4.2f"
                         "BodyRateX:%4.2f Y:%4.2f, delta_time = %u\n",
                         (unsigned)state.surface_quality,
@@ -94,13 +93,4 @@ void AP_OpticalFlow_Onboard::update()
 #endif
 }
 
-void AP_OpticalFlow_Onboard::_get_gyro(float &rate_x, float &rate_y,
-                                       float &rate_z)
-{
-    Vector3f rates = _ahrs.get_gyro();
-    rate_x = rates.x;
-    rate_y = rates.y;
-    rate_z = rates.z;
-}
-
-#endif
+#endif  // AP_OPTICALFLOW_ONBOARD_ENABLED

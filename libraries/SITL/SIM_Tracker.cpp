@@ -1,4 +1,3 @@
-/// -*- tab-width: 4; Mode: C++; c-basic-offset: 4; indent-tabs-mode: nil -*-
 /*
    This program is free software: you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -23,15 +22,10 @@
 
 namespace SITL {
 
-Tracker::Tracker(const char *home_str, const char *frame_str) :
-Aircraft(home_str, frame_str)
-{}
-
-
 /*
   update function for position (normal) servos.
 */
-void Tracker::update_position_servos(float delta_time, float &yaw_rate, float &pitch_rate)
+void Tracker::update_position_servos(float delta_time, float &yaw_rate, float &pitch_rate) const
 {
     float pitch_target = pitch_input*pitch_range;
     float yaw_target = yaw_input*yaw_range;
@@ -45,7 +39,7 @@ void Tracker::update_position_servos(float delta_time, float &yaw_rate, float &p
   These servos either move at a constant rate or are still
   Returns (yaw_rate,pitch_rate) tuple
 */
-void Tracker::update_onoff_servos(float &yaw_rate, float &pitch_rate)
+void Tracker::update_onoff_servos(float &yaw_rate, float &pitch_rate) const
 {
     if (fabsf(yaw_input) < 0.1) {
         yaw_rate = 0;
@@ -72,7 +66,7 @@ void Tracker::update(const struct sitl_input &input)
     // how much time has passed?
     float delta_time = frame_time_us * 1.0e-6f;
 
-    float yaw_rate, pitch_rate;
+    float yaw_rate = 0.0f, pitch_rate = 0.0f;
 
     yaw_input = (input.servos[0]-1500)/500.0f;
     pitch_input = (input.servos[1]-1500)/500.0f;
@@ -135,6 +129,10 @@ void Tracker::update(const struct sitl_input &input)
     // new velocity vector
     velocity_ef.zero();
     update_position();
+    time_advance();
+
+    // update magnetic field
+    update_mag_field_bf();
 }
 
 } // namespace SITL

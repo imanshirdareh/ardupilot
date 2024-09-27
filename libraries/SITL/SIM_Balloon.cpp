@@ -1,4 +1,3 @@
-/// -*- tab-width: 4; Mode: C++; c-basic-offset: 4; indent-tabs-mode: nil -*-
 /*
    This program is free software: you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -23,8 +22,8 @@
 
 namespace SITL {
 
-Balloon::Balloon(const char *home_str, const char *frame_str) :
-    Aircraft(home_str, frame_str)
+Balloon::Balloon(const char *frame_str) :
+    Aircraft(frame_str)
 {
     mass = 5.0f;
 }
@@ -34,6 +33,9 @@ Balloon::Balloon(const char *home_str, const char *frame_str) :
  */
 void Balloon::update(const struct sitl_input &input)
 {
+    // get wind vector setup
+    update_wind(input);
+
     if (!released && input.servos[6] > 1800) {
         ::printf("Balloon released\n");
         released = true;
@@ -48,7 +50,7 @@ void Balloon::update(const struct sitl_input &input)
     Vector3f rot_accel = -gyro * radians(400) / terminal_rotation_rate;
 
     // air resistance
-    Vector3f air_resistance = -velocity_ef * (GRAVITY_MSS/terminal_velocity);
+    Vector3f air_resistance = -velocity_air_ef * (GRAVITY_MSS/terminal_velocity) / eas2tas;
 
     float lift_accel = 0;
     if (!burst && released) {
@@ -57,7 +59,7 @@ void Balloon::update(const struct sitl_input &input)
     }
 
     accel_body = Vector3f(0, 0, -lift_accel);
-    accel_body += dcm * air_resistance;
+    accel_body += dcm.transposed() * air_resistance;
     
     update_dynamics(rot_accel);
 
@@ -68,6 +70,10 @@ void Balloon::update(const struct sitl_input &input)
     
     // update lat/lon/altitude
     update_position();
+    time_advance();
+
+    // update magnetic field
+    update_mag_field_bf();
 }
 
 } // namespace SITL
